@@ -1,0 +1,10 @@
+{
+  "name": "keboola-duckdb-extension",
+  "version": "0.1.0",
+  "dependencies": [],
+  "vcpkg-configuration": {
+    "overlay-ports": [
+      "./extension-ci-tools/vcpkg_ports"
+    ]
+  }
+}
