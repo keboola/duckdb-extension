@@ -1,7 +1,7 @@
 # Keboola DuckDB Extension
 
-[![CI](https://github.com/keboola/keboola-duckdb-extension/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/keboola/keboola-duckdb-extension/actions/workflows/MainDistributionPipeline.yml)
-[![DuckDB](https://img.shields.io/badge/DuckDB-v1.3.0-yellow)](https://duckdb.org)
+[![CI](https://github.com/keboola-rnd/keboola-duckdb-extension/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/keboola-rnd/keboola-duckdb-extension/actions/workflows/MainDistributionPipeline.yml)
+[![DuckDB](https://img.shields.io/badge/DuckDB-v1.5.0-yellow)](https://duckdb.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A native DuckDB extension that exposes [Keboola Storage](https://www.keboola.com) as a first-class DuckDB database. Query Keboola tables with standard SQL, push results back to Storage, and manage your data directly from DuckDB or any tool that embeds it (MotherDuck, Metabase, dbt, Python, R, …).
@@ -292,4 +292,4 @@ cd test && make test-docker-all
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2024–2025 Keboola s.r.o.
+[MIT](LICENSE) — Copyright (c) 2024–2026 Keboola s.r.o.
