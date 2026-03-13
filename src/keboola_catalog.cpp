@@ -217,21 +217,25 @@ static bool TryExtractStringConstant(const Expression &expr, std::string &out_va
     return false;
 }
 
+// Helper: extract idx_t from column_index, compatible with both DuckDB v1.5.0 (idx_t)
+// and DuckDB main (ProjectionIndex struct with .index member).
+template<typename T>
+static typename std::enable_if<std::is_integral<T>::value, idx_t>::type
+GetColumnIdx(T v) { return static_cast<idx_t>(v); }
+
+template<typename T>
+static typename std::enable_if<!std::is_integral<T>::value, idx_t>::type
+GetColumnIdx(T v) { return static_cast<idx_t>(v.index); }
+
 //! Try to resolve the column name from a ColumnRef expression within a LogicalGet.
 static bool TryExtractColumnName(const Expression &expr,
                                   const LogicalGet &get,
                                   std::string &out_col_name) {
     if (expr.expression_class == ExpressionClass::BOUND_COLUMN_REF) {
         const auto &cref = expr.Cast<BoundColumnRefExpression>();
-        // column_index is the index within the output of the LogicalGet
-        // In DuckDB v1.5.0, column_index is idx_t; in DuckDB main it is ProjectionIndex.
-        // Use if constexpr to handle both without version macros.
-        idx_t col_idx;
-        if constexpr (std::is_integral_v<decltype(cref.binding.column_index)>) {
-            col_idx = static_cast<idx_t>(cref.binding.column_index);
-        } else {
-            col_idx = static_cast<idx_t>(cref.binding.column_index.index);
-        }
+        // column_index is idx_t in DuckDB v1.5.0; ProjectionIndex (struct) in DuckDB main.
+        // Use SFINAE helpers (C++11 compatible) to dispatch without version macros.
+        idx_t col_idx = GetColumnIdx(cref.binding.column_index);
         // LogicalGet::names holds the projected column names
         if (col_idx < get.names.size()) {
             out_col_name = get.names[col_idx];
