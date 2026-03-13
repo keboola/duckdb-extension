@@ -8,8 +8,7 @@
 # Setup — load extension only (no live connection required for most tests)
 ##############################################################################
 
-statement ok
-LOAD keboola;
+require keboola
 
 ##############################################################################
 # 1. Invalid token — authentication error

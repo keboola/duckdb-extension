@@ -7,8 +7,7 @@
 ##############################################################################
 
 # The extension must load without errors
-statement ok
-LOAD keboola;
+require keboola
 
 # keboola_version() must return a non-empty string
 query T

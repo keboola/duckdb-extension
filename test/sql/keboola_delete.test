@@ -12,8 +12,7 @@ require-env KEBOOLA_URL
 # Setup
 ##############################################################################
 
-statement ok
-LOAD keboola;
+require keboola
 
 statement ok
 CREATE OR REPLACE SECRET del_secret (
