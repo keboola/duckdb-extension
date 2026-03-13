@@ -33,8 +33,6 @@ jobs:
       ci_tools_version: main
       extension_name: keboola
       enable_rust: false
-    # DuckDB main is a moving target — allowed to fail without blocking release
-    continue-on-error: true
 
   # ---------------------------------------------------------------------------
   # Offline SQL logic tests — no credentials required
@@ -160,9 +158,8 @@ jobs:
     name: Community Extension Release
     needs:
       - duckdb-stable-build
-      - duckdb-next-build
       - e2e-gate
-    if: startsWith(github.ref, 'refs/tags/v') && needs.duckdb-stable-build.result == 'success' && needs.e2e-gate.result == 'success'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -175,15 +172,6 @@ jobs:
         with:
           pattern: "*-v1.5.0"
           path: artifacts/stable/
-          merge-multiple: false
-
-      - name: Download all next build artifacts
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        if: needs.duckdb-next-build.result == 'success'
-        with:
-          pattern: "*-main"
-          path: artifacts/next/
           merge-multiple: false
 
       # Upload to S3 via the duckdb extension distribution mechanism
