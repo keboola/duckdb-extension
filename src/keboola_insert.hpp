@@ -4,6 +4,7 @@
 #include "util/csv_builder.hpp"
 
 #include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
 
@@ -44,7 +45,8 @@ struct KeboolaInsertSourceState : public GlobalSourceState {
 class KeboolaInsert : public PhysicalOperator {
 public:
     //! Constructor for INSERT INTO.
-    KeboolaInsert(LogicalOperator &op,
+    KeboolaInsert(PhysicalPlan &physical_plan,
+                  LogicalOperator &op,
                   TableCatalogEntry &table,
                   PhysicalIndex row_id_index);
 
@@ -77,9 +79,9 @@ public:
 
     unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
 
-    SourceResultType GetData(ExecutionContext &context,
-                              DataChunk &chunk,
-                              OperatorSourceInput &input) const override;
+    SourceResultType GetDataInternal(ExecutionContext &context,
+                                      DataChunk &chunk,
+                                      OperatorSourceInput &input) const override;
 
     bool IsSource() const override { return true; }
 

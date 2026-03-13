@@ -122,11 +122,11 @@ static Value StringToValue(const string &str, const LogicalType &type) {
             catch (...) { return Value(type); }
 
         case LogicalTypeId::TIMESTAMP:
-            try { return Value::TIMESTAMP(Timestamp::FromString(str)); }
+            try { return Value::TIMESTAMP(Timestamp::FromString(str, false)); }
             catch (...) { return Value(type); }
 
         case LogicalTypeId::TIMESTAMP_TZ:
-            try { return Value::TIMESTAMPTZ(timestamp_tz_t(Timestamp::FromString(str))); }
+            try { return Value::TIMESTAMPTZ(timestamp_tz_t(Timestamp::FromString(str, true))); }
             catch (...) { return Value(type); }
 
         case LogicalTypeId::TIME:

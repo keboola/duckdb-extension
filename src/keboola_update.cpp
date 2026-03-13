@@ -7,6 +7,7 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/execution/execution_context.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/event.hpp"
@@ -23,11 +24,13 @@ namespace duckdb {
 // Constructor
 // ---------------------------------------------------------------------------
 
-KeboolaUpdate::KeboolaUpdate(LogicalOperator &op,
+KeboolaUpdate::KeboolaUpdate(PhysicalPlan &physical_plan,
+                              LogicalOperator &op,
                               TableCatalogEntry &table,
                               vector<PhysicalIndex> columns,
                               vector<unique_ptr<Expression>> updates)
-    : PhysicalOperator(PhysicalOperatorType::EXTENSION,
+    : PhysicalOperator(physical_plan,
+                       PhysicalOperatorType::EXTENSION,
                        op.types,
                        op.estimated_cardinality),
       table_(table),
@@ -192,9 +195,9 @@ unique_ptr<GlobalSourceState> KeboolaUpdate::GetGlobalSourceState(ClientContext 
 // GetData — emit one row with the update count
 // ---------------------------------------------------------------------------
 
-SourceResultType KeboolaUpdate::GetData(ExecutionContext & /*context*/,
-                                         DataChunk &chunk,
-                                         OperatorSourceInput &input) const {
+SourceResultType KeboolaUpdate::GetDataInternal(ExecutionContext & /*context*/,
+                                                 DataChunk &chunk,
+                                                 OperatorSourceInput &input) const {
     auto &source_state = input.global_state.Cast<KeboolaUpdateSourceState>();
 
     if (source_state.finished) {

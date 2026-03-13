@@ -6,6 +6,7 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/execution/execution_context.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/event.hpp"
@@ -21,10 +22,12 @@ namespace duckdb {
 // Constructor
 // ---------------------------------------------------------------------------
 
-KeboolaDelete::KeboolaDelete(LogicalOperator &op,
+KeboolaDelete::KeboolaDelete(PhysicalPlan &physical_plan,
+                              LogicalOperator &op,
                               TableCatalogEntry &table,
                               KeboolaDeleteParams params)
-    : PhysicalOperator(PhysicalOperatorType::EXTENSION,
+    : PhysicalOperator(physical_plan,
+                       PhysicalOperatorType::EXTENSION,
                        op.types,
                        op.estimated_cardinality),
       table_(table),
@@ -90,9 +93,9 @@ unique_ptr<GlobalSourceState> KeboolaDelete::GetGlobalSourceState(ClientContext 
 // GetData — emit one row with the delete count
 // ---------------------------------------------------------------------------
 
-SourceResultType KeboolaDelete::GetData(ExecutionContext & /*context*/,
-                                         DataChunk &chunk,
-                                         OperatorSourceInput &input) const {
+SourceResultType KeboolaDelete::GetDataInternal(ExecutionContext & /*context*/,
+                                                 DataChunk &chunk,
+                                                 OperatorSourceInput &input) const {
     auto &source_state = input.global_state.Cast<KeboolaDeleteSourceState>();
 
     if (source_state.finished) {

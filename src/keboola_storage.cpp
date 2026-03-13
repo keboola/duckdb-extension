@@ -54,20 +54,12 @@ static void ReadFromSecret(ClientContext &context,
 // KeboolaAttach — called by DuckDB when ATTACH TYPE keboola is executed
 // ---------------------------------------------------------------------------
 
-static unique_ptr<Catalog> KeboolaAttach(StorageExtensionInfo * /*storage_info*/,
+static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*storage_info*/,
                                           ClientContext &context,
                                           AttachedDatabase &db,
                                           const string &name,
                                           AttachInfo &info,
-                                          AccessMode /*access_mode*/) {
-    // Verify external access is permitted
-    auto &config = DBConfig::GetConfig(context);
-    if (!config.options.enable_external_access) {
-        throw PermissionException(
-            "Attaching Keboola databases is disabled through configuration "
-            "(enable_external_access=false)");
-    }
-
+                                          AttachOptions & /*options*/) {
     std::string token;
     std::string url;
     std::string branch;
@@ -198,7 +190,7 @@ static unique_ptr<Catalog> KeboolaAttach(StorageExtensionInfo * /*storage_info*/
 // ---------------------------------------------------------------------------
 
 static unique_ptr<TransactionManager> KeboolaCreateTransactionManager(
-    StorageExtensionInfo * /*storage_info*/,
+    optional_ptr<StorageExtensionInfo> /*storage_info*/,
     AttachedDatabase &db,
     Catalog &catalog) {
 

@@ -4,6 +4,7 @@
 #include "util/csv_builder.hpp"
 
 #include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -61,7 +62,8 @@ struct KeboolaUpdateSourceState : public GlobalSourceState {
 //!   3. As a Source: emits one row with the BIGINT update count.
 class KeboolaUpdate : public PhysicalOperator {
 public:
-    KeboolaUpdate(LogicalOperator &op,
+    KeboolaUpdate(PhysicalPlan &physical_plan,
+                  LogicalOperator &op,
                   TableCatalogEntry &table,
                   vector<PhysicalIndex> columns,
                   vector<unique_ptr<Expression>> updates);
@@ -98,9 +100,9 @@ public:
 
     unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
 
-    SourceResultType GetData(ExecutionContext &context,
-                              DataChunk &chunk,
-                              OperatorSourceInput &input) const override;
+    SourceResultType GetDataInternal(ExecutionContext &context,
+                                      DataChunk &chunk,
+                                      OperatorSourceInput &input) const override;
 
     bool IsSource() const override { return true; }
 

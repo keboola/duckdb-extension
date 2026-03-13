@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -12,6 +13,6 @@ namespace duckdb {
 //!       URL  'https://connection.keboola.com',
 //!       BRANCH 'main'
 //!   );
-void RegisterKeboolaSecret(DatabaseInstance &db);
+void RegisterKeboolaSecret(ExtensionLoader &loader);
 
 } // namespace duckdb

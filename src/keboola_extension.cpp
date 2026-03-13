@@ -8,7 +8,9 @@
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/storage/storage_extension.hpp"
+#include "duckdb/main/config.hpp"
 
 namespace duckdb {
 
@@ -27,30 +29,31 @@ static void KeboolaVersionScalarFun(DataChunk & /*args*/, ExpressionState & /*st
 // ---------------------------------------------------------------------------
 // LoadInternal — called from both static and dynamic load paths
 // ---------------------------------------------------------------------------
-static void LoadInternal(DatabaseInstance &db) {
+static void LoadInternal(ExtensionLoader &loader) {
     // Register keboola_version() scalar function
     ScalarFunction version_func("keboola_version",
                                  {},                     // no arguments
                                  LogicalType::VARCHAR,
                                  KeboolaVersionScalarFun);
-    ExtensionUtil::RegisterFunction(db, version_func);
+    loader.RegisterFunction(version_func);
 
     // Register the "keboola" secret type (TOKEN, URL, BRANCH)
-    RegisterKeboolaSecret(db);
+    RegisterKeboolaSecret(loader);
 
     // Register the keboola storage extension (handles ATTACH TYPE keboola)
+    auto &db = loader.GetDatabaseInstance();
     auto &config = DBConfig::GetConfig(db);
-    config.storage_extensions["keboola"] = make_uniq<KeboolaStorageExtension>();
+    StorageExtension::Register(config, "keboola", make_shared_ptr<KeboolaStorageExtension>());
 
     // Register Phase 6 utility functions
-    RegisterKeboolaFunctions(db);
+    RegisterKeboolaFunctions(loader);
 }
 
 // ---------------------------------------------------------------------------
 // KeboolaExtension methods
 // ---------------------------------------------------------------------------
-void KeboolaExtension::Load(DuckDB &db) {
-    LoadInternal(*db.instance);
+void KeboolaExtension::Load(ExtensionLoader &loader) {
+    LoadInternal(loader);
 }
 
 std::string KeboolaExtension::Name() {
@@ -72,9 +75,8 @@ std::string KeboolaExtension::Version() const {
 // ---------------------------------------------------------------------------
 extern "C" {
 
-DUCKDB_EXTENSION_API void keboola_init(duckdb::DatabaseInstance &db) {
-    duckdb::DuckDB db_wrapper(db);
-    db_wrapper.LoadExtension<duckdb::KeboolaExtension>();
+DUCKDB_CPP_EXTENSION_ENTRY(keboola, loader) {
+    duckdb::LoadInternal(loader);
 }
 
 DUCKDB_EXTENSION_API const char *keboola_version() {

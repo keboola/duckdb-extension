@@ -34,7 +34,7 @@ int64_t ImporterClient::WriteTable(
     bool incremental
 ) {
     // Build multipart form data per the Keboola Importer API spec
-    httplib::MultipartFormDataItems items = {
+    httplib::UploadFormDataItems items = {
         {"tableId",     table_id,                  "",         ""},
         {"incremental", incremental ? "1" : "0",   "",         ""},
         {"delimiter",   ",",                        "",         ""},

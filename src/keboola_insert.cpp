@@ -6,6 +6,7 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/execution/execution_context.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/event.hpp"
@@ -21,10 +22,12 @@ namespace duckdb {
 // Constructor
 // ---------------------------------------------------------------------------
 
-KeboolaInsert::KeboolaInsert(LogicalOperator &op,
+KeboolaInsert::KeboolaInsert(PhysicalPlan &physical_plan,
+                              LogicalOperator &op,
                               TableCatalogEntry &table,
                               PhysicalIndex row_id_index)
-    : PhysicalOperator(PhysicalOperatorType::EXTENSION,
+    : PhysicalOperator(physical_plan,
+                       PhysicalOperatorType::EXTENSION,
                        op.types,
                        op.estimated_cardinality),
       table_(table),
@@ -113,9 +116,9 @@ unique_ptr<GlobalSourceState> KeboolaInsert::GetGlobalSourceState(ClientContext 
 // GetData — emit a single row with the insert count
 // ---------------------------------------------------------------------------
 
-SourceResultType KeboolaInsert::GetData(ExecutionContext & /*context*/,
-                                         DataChunk &chunk,
-                                         OperatorSourceInput &input) const {
+SourceResultType KeboolaInsert::GetDataInternal(ExecutionContext & /*context*/,
+                                                 DataChunk &chunk,
+                                                 OperatorSourceInput &input) const {
     auto &source_state = input.global_state.Cast<KeboolaInsertSourceState>();
 
     if (source_state.finished) {

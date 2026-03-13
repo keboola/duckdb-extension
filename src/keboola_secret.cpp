@@ -1,6 +1,6 @@
 #include "keboola_secret.hpp"
 
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/main/database.hpp"
@@ -54,15 +54,14 @@ static unique_ptr<BaseSecret> CreateKeboolaSecret(ClientContext & /*context*/,
 // RegisterKeboolaSecret
 // ---------------------------------------------------------------------------
 
-void RegisterKeboolaSecret(DatabaseInstance &db) {
-    // 1. Register the secret type via the SecretManager
+void RegisterKeboolaSecret(ExtensionLoader &loader) {
+    // 1. Register the secret type via the ExtensionLoader
     SecretType secret_type;
     secret_type.name             = "keboola";
     secret_type.deserializer     = KeyValueSecret::Deserialize<KeyValueSecret>;
     secret_type.default_provider = "config";
 
-    auto &config = DBConfig::GetConfig(db);
-    config.secret_manager->RegisterSecretType(secret_type);
+    loader.RegisterSecretType(secret_type);
 
     // 2. Register the CREATE SECRET handler
     CreateSecretFunction secret_fun;
@@ -73,7 +72,7 @@ void RegisterKeboolaSecret(DatabaseInstance &db) {
     secret_fun.named_parameters["url"]    = LogicalType::VARCHAR;
     secret_fun.named_parameters["branch"] = LogicalType::VARCHAR;
 
-    config.secret_manager->RegisterSecretFunction(std::move(secret_fun), OnCreateConflict::ERROR_ON_CONFLICT);
+    loader.RegisterFunction(std::move(secret_fun));
 }
 
 } // namespace duckdb

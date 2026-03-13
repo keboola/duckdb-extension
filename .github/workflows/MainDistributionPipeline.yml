@@ -11,14 +11,14 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build against DuckDB stable (v1.3.0)
+  # Build against DuckDB stable (v1.5.0)
   # ---------------------------------------------------------------------------
   duckdb-stable-build:
-    name: Build (DuckDB v1.3.0)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.3.0
+    name: Build (DuckDB v1.5.0 — Variegata)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
     with:
-      duckdb_version: v1.3.0
-      ci_tools_version: v1.3.0
+      duckdb_version: v1.5.0
+      ci_tools_version: v1.5.0
       extension_name: keboola
       enable_rust: false
 
@@ -39,7 +39,7 @@ jobs:
   # Run after stable build so we use the built binary.
   # ---------------------------------------------------------------------------
   offline-tests:
-    name: Offline SQL tests (v1.3.0)
+    name: Offline SQL tests (v1.5.0)
     needs: duckdb-stable-build
     runs-on: ubuntu-latest
     steps:
@@ -50,16 +50,16 @@ jobs:
       - name: Download linux_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: linux_amd64-v1.3.0
+          name: linux_amd64-v1.5.0
           path: artifacts/
 
       - name: Make extension executable
         run: |
           find artifacts/ -name "*.duckdb_extension" -exec chmod +x {} \;
 
-      - name: Install DuckDB CLI v1.3.0
+      - name: Install DuckDB CLI v1.5.0
         run: |
-          curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.3.0/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.0/duckdb_cli-linux-amd64.zip -o duckdb.zip
           unzip duckdb.zip -d /usr/local/bin/
           chmod +x /usr/local/bin/duckdb
 
@@ -98,7 +98,7 @@ jobs:
       - name: Download all stable build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: "*-v1.3.0"
+          pattern: "*-v1.5.0"
           path: artifacts/stable/
           merge-multiple: false
 
@@ -125,7 +125,7 @@ jobs:
             platform=$(basename "$platform_dir")
             for ext in "$platform_dir"*.duckdb_extension; do
               [ -f "$ext" ] || continue
-              s3_key="keboola/v1.3.0/${platform}/keboola.duckdb_extension"
+              s3_key="keboola/v1.5.0/${platform}/keboola.duckdb_extension"
               aws s3 cp "$ext" "s3://${BUCKET_NAME}/${s3_key}" --acl public-read || true
             done
           done

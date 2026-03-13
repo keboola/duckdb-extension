@@ -10,7 +10,7 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
@@ -263,14 +263,14 @@ static void KeboolaPullFun(DataChunk &args, ExpressionState &state, Vector &resu
 // RegisterKeboolaFunctions — called from LoadInternal in keboola_extension.cpp
 // ---------------------------------------------------------------------------
 
-void RegisterKeboolaFunctions(DatabaseInstance &db) {
+void RegisterKeboolaFunctions(ExtensionLoader &loader) {
     // keboola_refresh_catalog(VARCHAR) → VARCHAR
     ScalarFunction refresh_func(
         "keboola_refresh_catalog",
         {LogicalType::VARCHAR},
         LogicalType::VARCHAR,
         KeboolaRefreshCatalogFun);
-    ExtensionUtil::RegisterFunction(db, refresh_func);
+    loader.RegisterFunction(refresh_func);
 
     // keboola_tables(VARCHAR) → TABLE(schema_name, table_name, table_id, description, primary_key)
     TableFunction tables_func("keboola_tables",
@@ -278,7 +278,7 @@ void RegisterKeboolaFunctions(DatabaseInstance &db) {
                                KeboolaTablesScan,
                                KeboolaTablesBindFn);
     tables_func.init_global = KeboolaTablesInitGlobal;
-    ExtensionUtil::RegisterFunction(db, tables_func);
+    loader.RegisterFunction(tables_func);
 
     // keboola_pull(VARCHAR) → VARCHAR
     ScalarFunction pull_func(
@@ -286,7 +286,7 @@ void RegisterKeboolaFunctions(DatabaseInstance &db) {
         {LogicalType::VARCHAR},
         LogicalType::VARCHAR,
         KeboolaPullFun);
-    ExtensionUtil::RegisterFunction(db, pull_func);
+    loader.RegisterFunction(pull_func);
 }
 
 } // namespace duckdb
