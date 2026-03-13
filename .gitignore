@@ -1,0 +1,47 @@
+# Build output
+build/
+*.duckdb_extension
+*.duckdb_extension.gz
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+_deps/
+
+# vcpkg installed packages (but keep vcpkg.json and the overlay ports)
+vcpkg_installed/
+
+# DuckDB submodule build artefacts — the submodule itself is tracked
+duckdb/build/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+.venv/
+venv/
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini

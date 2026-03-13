@@ -1,0 +1,455 @@
+# keboola_types.test
+# Tests for all type mappings, NULL values, and edge cases.
+# Assumes a test project with a typed table:
+#   kbc."out.c-test-types".typed_table
+# Columns (with Keboola typed-table metadata):
+#   str_col    VARCHAR
+#   int_col    BIGINT
+#   dec_col    DECIMAL(18,4)
+#   float_col  DOUBLE
+#   bool_col   BOOLEAN
+#   date_col   DATE
+#   ts_col     TIMESTAMP
+#   tstz_col   TIMESTAMPTZ
+# This test file also covers untyped (all-VARCHAR) tables and edge values.
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+##############################################################################
+# Setup
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+statement ok
+CREATE OR REPLACE SECRET types_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET types_secret);
+
+# Create the typed table in the test bucket if it doesn't exist
+statement ok
+CREATE TABLE IF NOT EXISTS kbc."out.c-test-types".typed_table (
+    str_col   VARCHAR,
+    int_col   BIGINT,
+    dec_col   DECIMAL(18,4),
+    float_col DOUBLE,
+    bool_col  BOOLEAN,
+    date_col  DATE,
+    ts_col    TIMESTAMP,
+    tstz_col  TIMESTAMPTZ
+);
+
+##############################################################################
+# 1. Insert typed values
+##############################################################################
+
+statement ok
+INSERT INTO kbc."out.c-test-types".typed_table
+    (str_col, int_col, dec_col, float_col, bool_col, date_col, ts_col, tstz_col)
+VALUES (
+    'hello world',
+    9876543210,
+    12345.6789,
+    3.141592653589793,
+    true,
+    '2024-06-15',
+    '2024-06-15 12:34:56',
+    '2024-06-15 12:34:56+02:00'
+);
+
+##############################################################################
+# 2. VARCHAR column
+##############################################################################
+
+query T
+SELECT str_col FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'hello world'
+LIMIT 1;
+----
+hello world
+
+query T
+SELECT typeof(str_col) = 'VARCHAR'
+FROM kbc."out.c-test-types".typed_table
+LIMIT 1;
+----
+true
+
+##############################################################################
+# 3. BIGINT column
+##############################################################################
+
+query I
+SELECT int_col FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'hello world'
+LIMIT 1;
+----
+9876543210
+
+query T
+SELECT typeof(int_col) IN ('BIGINT', 'INTEGER', 'HUGEINT')
+FROM kbc."out.c-test-types".typed_table
+LIMIT 1;
+----
+true
+
+##############################################################################
+# 4. DECIMAL column
+##############################################################################
+
+query R
+SELECT dec_col FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'hello world'
+LIMIT 1;
+----
+12345.6789
+
+query T
+SELECT typeof(dec_col) LIKE 'DECIMAL%'
+FROM kbc."out.c-test-types".typed_table
+LIMIT 1;
+----
+true
+
+##############################################################################
+# 5. DOUBLE column
+##############################################################################
+
+query R
+SELECT float_col FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'hello world'
+LIMIT 1;
+----
+3.141592653589793
+
+query T
+SELECT typeof(float_col) IN ('DOUBLE', 'FLOAT', 'REAL')
+FROM kbc."out.c-test-types".typed_table
+LIMIT 1;
+----
+true
+
+##############################################################################
+# 6. BOOLEAN column
+##############################################################################
+
+query B
+SELECT bool_col FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'hello world'
+LIMIT 1;
+----
+true
+
+query T
+SELECT typeof(bool_col) = 'BOOLEAN'
+FROM kbc."out.c-test-types".typed_table
+LIMIT 1;
+----
+true
+
+# Insert FALSE value
+statement ok
+INSERT INTO kbc."out.c-test-types".typed_table
+    (str_col, int_col, dec_col, float_col, bool_col, date_col, ts_col, tstz_col)
+VALUES (
+    'bool false row',
+    0,
+    0.0,
+    0.0,
+    false,
+    '2024-01-01',
+    '2024-01-01 00:00:00',
+    '2024-01-01 00:00:00+00:00'
+);
+
+query B
+SELECT bool_col FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'bool false row'
+LIMIT 1;
+----
+false
+
+##############################################################################
+# 7. DATE column
+##############################################################################
+
+query T
+SELECT date_col::VARCHAR FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'hello world'
+LIMIT 1;
+----
+2024-06-15
+
+query T
+SELECT typeof(date_col) = 'DATE'
+FROM kbc."out.c-test-types".typed_table
+LIMIT 1;
+----
+true
+
+##############################################################################
+# 8. TIMESTAMP column (NTZ)
+##############################################################################
+
+query T
+SELECT ts_col::VARCHAR FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'hello world'
+LIMIT 1;
+----
+2024-06-15 12:34:56
+
+query T
+SELECT typeof(ts_col) IN ('TIMESTAMP', 'TIMESTAMP WITHOUT TIME ZONE')
+FROM kbc."out.c-test-types".typed_table
+LIMIT 1;
+----
+true
+
+##############################################################################
+# 9. TIMESTAMPTZ column
+##############################################################################
+
+query T
+SELECT typeof(tstz_col) IN ('TIMESTAMPTZ', 'TIMESTAMP WITH TIME ZONE')
+FROM kbc."out.c-test-types".typed_table
+LIMIT 1;
+----
+true
+
+##############################################################################
+# 10. NULL values for every type
+##############################################################################
+
+statement ok
+INSERT INTO kbc."out.c-test-types".typed_table
+    (str_col, int_col, dec_col, float_col, bool_col, date_col, ts_col, tstz_col)
+VALUES (
+    'all nulls row',
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL
+);
+
+query T
+SELECT int_col IS NULL FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'all nulls row' LIMIT 1;
+----
+true
+
+query T
+SELECT dec_col IS NULL FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'all nulls row' LIMIT 1;
+----
+true
+
+query T
+SELECT float_col IS NULL FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'all nulls row' LIMIT 1;
+----
+true
+
+query T
+SELECT bool_col IS NULL FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'all nulls row' LIMIT 1;
+----
+true
+
+query T
+SELECT date_col IS NULL FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'all nulls row' LIMIT 1;
+----
+true
+
+query T
+SELECT ts_col IS NULL FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'all nulls row' LIMIT 1;
+----
+true
+
+query T
+SELECT tstz_col IS NULL FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'all nulls row' LIMIT 1;
+----
+true
+
+##############################################################################
+# 11. Edge values
+##############################################################################
+
+# Max BIGINT
+statement ok
+INSERT INTO kbc."out.c-test-types".typed_table
+    (str_col, int_col, dec_col, float_col, bool_col, date_col, ts_col, tstz_col)
+VALUES (
+    'max bigint',
+    9223372036854775807,
+    9999999999999999.9999,
+    1.7976931348623157e+308,
+    true,
+    '9999-12-31',
+    '9999-12-31 23:59:59',
+    '9999-12-31 23:59:59+00:00'
+);
+
+query T
+SELECT int_col = 9223372036854775807
+FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'max bigint' LIMIT 1;
+----
+true
+
+# Min/negative BIGINT
+statement ok
+INSERT INTO kbc."out.c-test-types".typed_table
+    (str_col, int_col, dec_col, float_col, bool_col, date_col, ts_col, tstz_col)
+VALUES (
+    'neg bigint',
+    -9223372036854775808,
+    -9999999999999999.9999,
+    -1.7976931348623157e+308,
+    false,
+    '0001-01-01',
+    '0001-01-01 00:00:00',
+    '0001-01-01 00:00:00+00:00'
+);
+
+query T
+SELECT int_col = -9223372036854775808
+FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'neg bigint' LIMIT 1;
+----
+true
+
+# Zero values
+statement ok
+INSERT INTO kbc."out.c-test-types".typed_table
+    (str_col, int_col, dec_col, float_col, bool_col, date_col, ts_col, tstz_col)
+VALUES (
+    'zeros',
+    0,
+    0.0000,
+    0.0,
+    false,
+    '2000-01-01',
+    '2000-01-01 00:00:00',
+    '2000-01-01 00:00:00+00:00'
+);
+
+query T
+SELECT int_col = 0 AND dec_col = 0.0 AND float_col = 0.0
+FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'zeros' LIMIT 1;
+----
+true
+
+##############################################################################
+# 12. VARCHAR edge cases — special characters, Unicode, empty string
+##############################################################################
+
+statement ok
+CREATE TABLE IF NOT EXISTS kbc."out.c-test-types".varchar_edge (
+    id       VARCHAR,
+    str_val  VARCHAR
+);
+
+statement ok
+INSERT INTO kbc."out.c-test-types".varchar_edge (id, str_val)
+VALUES ('vc-empty',   '');
+
+statement ok
+INSERT INTO kbc."out.c-test-types".varchar_edge (id, str_val)
+VALUES ('vc-space',   ' ');
+
+statement ok
+INSERT INTO kbc."out.c-test-types".varchar_edge (id, str_val)
+VALUES ('vc-unicode', 'こんにちは世界 🌏');
+
+statement ok
+INSERT INTO kbc."out.c-test-types".varchar_edge (id, str_val)
+VALUES ('vc-comma',   'a,b,c');
+
+statement ok
+INSERT INTO kbc."out.c-test-types".varchar_edge (id, str_val)
+VALUES ('vc-quote',   'say "hello"');
+
+statement ok
+INSERT INTO kbc."out.c-test-types".varchar_edge (id, str_val)
+VALUES ('vc-newline', E'line1\nline2');
+
+statement ok
+INSERT INTO kbc."out.c-test-types".varchar_edge (id, str_val)
+VALUES ('vc-tab',     E'col1\tcol2');
+
+query T
+SELECT str_val = ''
+FROM kbc."out.c-test-types".varchar_edge
+WHERE id = 'vc-empty';
+----
+true
+
+query T
+SELECT str_val = ' '
+FROM kbc."out.c-test-types".varchar_edge
+WHERE id = 'vc-space';
+----
+true
+
+query T
+SELECT str_val = 'こんにちは世界 🌏'
+FROM kbc."out.c-test-types".varchar_edge
+WHERE id = 'vc-unicode';
+----
+true
+
+query T
+SELECT str_val = 'a,b,c'
+FROM kbc."out.c-test-types".varchar_edge
+WHERE id = 'vc-comma';
+----
+true
+
+query T
+SELECT str_val = 'say "hello"'
+FROM kbc."out.c-test-types".varchar_edge
+WHERE id = 'vc-quote';
+----
+true
+
+##############################################################################
+# 13. Arithmetic on typed numeric columns
+##############################################################################
+
+query T
+SELECT int_col + 1 > int_col
+FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'zeros' LIMIT 1;
+----
+true
+
+query T
+SELECT dec_col + 1.0 > dec_col
+FROM kbc."out.c-test-types".typed_table
+WHERE str_col = 'zeros' LIMIT 1;
+----
+true
+
+##############################################################################
+# Teardown
+##############################################################################
+
+statement ok
+DELETE FROM kbc."out.c-test-types".typed_table WHERE str_col IN (
+    'hello world', 'bool false row', 'all nulls row',
+    'max bigint', 'neg bigint', 'zeros'
+);
+
+statement ok
+DELETE FROM kbc."out.c-test-types".varchar_edge WHERE id LIKE 'vc-%';
+
+statement ok
+DETACH kbc;

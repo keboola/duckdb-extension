@@ -1,0 +1,309 @@
+# keboola_ddl.test
+# Tests for DDL: CREATE TABLE, DROP TABLE, CREATE SCHEMA (bucket),
+# and associated error cases.
+# Uses unique names with 'test_ddl_' prefix to avoid collisions.
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+##############################################################################
+# Setup
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+statement ok
+CREATE OR REPLACE SECRET ddl_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET ddl_secret);
+
+##############################################################################
+# 1. CREATE SCHEMA — creates a Keboola bucket
+##############################################################################
+
+# Create a new input bucket
+statement ok
+CREATE SCHEMA kbc."in.c-test-ddl";
+
+# The schema must now appear in the catalog
+query T
+SELECT COUNT(*) = 1
+FROM information_schema.schemata
+WHERE catalog_name = 'kbc'
+  AND schema_name = 'in.c-test-ddl';
+----
+true
+
+##############################################################################
+# 2. CREATE SCHEMA — duplicate schema must error
+##############################################################################
+
+statement error
+CREATE SCHEMA kbc."in.c-test-ddl";
+
+# IF NOT EXISTS must succeed silently
+statement ok
+CREATE SCHEMA IF NOT EXISTS kbc."in.c-test-ddl";
+
+##############################################################################
+# 3. CREATE SCHEMA — output bucket
+##############################################################################
+
+statement ok
+CREATE SCHEMA kbc."out.c-test-ddl";
+
+query T
+SELECT COUNT(*) = 1
+FROM information_schema.schemata
+WHERE catalog_name = 'kbc'
+  AND schema_name = 'out.c-test-ddl';
+----
+true
+
+##############################################################################
+# 4. CREATE TABLE in an existing bucket
+##############################################################################
+
+statement ok
+CREATE TABLE kbc."in.c-test-ddl".products (
+    id      VARCHAR,
+    sku     VARCHAR,
+    name    VARCHAR,
+    price   VARCHAR,
+    active  VARCHAR
+);
+
+# Table must appear in catalog
+query T
+SELECT COUNT(*) = 1
+FROM information_schema.tables
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-test-ddl'
+  AND table_name = 'products';
+----
+true
+
+# Columns must be present
+query T
+SELECT COUNT(*) = 5
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-test-ddl'
+  AND table_name = 'products';
+----
+true
+
+# All columns must be VARCHAR (default Keboola type)
+query T
+SELECT COUNT(*) = 5
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-test-ddl'
+  AND table_name = 'products'
+  AND data_type = 'VARCHAR';
+----
+true
+
+##############################################################################
+# 5. CREATE TABLE — then INSERT and SELECT (round-trip)
+##############################################################################
+
+statement ok
+INSERT INTO kbc."in.c-test-ddl".products (id, sku, name, price, active)
+VALUES ('p1', 'SKU-001', 'Widget', '9.99', 'true');
+
+query TTT
+SELECT id, sku, name
+FROM kbc."in.c-test-ddl".products
+WHERE id = 'p1';
+----
+p1	SKU-001	Widget
+
+##############################################################################
+# 6. CREATE TABLE — duplicate table name must error
+##############################################################################
+
+statement error
+CREATE TABLE kbc."in.c-test-ddl".products (
+    id VARCHAR,
+    name VARCHAR
+);
+
+# IF NOT EXISTS must succeed silently
+statement ok
+CREATE TABLE IF NOT EXISTS kbc."in.c-test-ddl".products (
+    id VARCHAR,
+    name VARCHAR
+);
+
+##############################################################################
+# 7. CREATE TABLE in a non-existent schema must error
+##############################################################################
+
+statement error
+CREATE TABLE kbc."in.c-this-bucket-does-not-exist-xyz".my_table (
+    id VARCHAR
+);
+
+##############################################################################
+# 8. CREATE TABLE with an empty column list must error
+##############################################################################
+
+statement error
+CREATE TABLE kbc."in.c-test-ddl".empty_table ();
+
+##############################################################################
+# 9. DROP TABLE
+##############################################################################
+
+statement ok
+CREATE TABLE kbc."in.c-test-ddl".to_drop (id VARCHAR, val VARCHAR);
+
+statement ok
+DROP TABLE kbc."in.c-test-ddl".to_drop;
+
+# Table must no longer appear in catalog
+query T
+SELECT COUNT(*) = 0
+FROM information_schema.tables
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-test-ddl'
+  AND table_name = 'to_drop';
+----
+true
+
+##############################################################################
+# 10. DROP TABLE on a non-existent table must error
+##############################################################################
+
+statement error
+DROP TABLE kbc."in.c-test-ddl".no_such_table_xyz;
+
+# IF EXISTS must succeed silently
+statement ok
+DROP TABLE IF EXISTS kbc."in.c-test-ddl".no_such_table_xyz;
+
+##############################################################################
+# 11. DROP TABLE in a non-existent schema must error
+##############################################################################
+
+statement error
+DROP TABLE kbc."in.c-no-such-schema-xyz".some_table;
+
+##############################################################################
+# 12. CREATE TABLE with typed columns (Keboola typed tables)
+##############################################################################
+
+statement ok
+CREATE TABLE kbc."out.c-test-ddl".metrics (
+    metric_id   VARCHAR,
+    value       BIGINT,
+    ratio       DOUBLE,
+    event_date  DATE,
+    created_at  TIMESTAMP,
+    is_valid    BOOLEAN
+);
+
+# Typed columns must appear with correct types
+query T
+SELECT data_type = 'BIGINT'
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'out.c-test-ddl'
+  AND table_name = 'metrics'
+  AND column_name = 'value';
+----
+true
+
+query T
+SELECT data_type = 'DOUBLE'
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'out.c-test-ddl'
+  AND table_name = 'metrics'
+  AND column_name = 'ratio';
+----
+true
+
+query T
+SELECT data_type = 'DATE'
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'out.c-test-ddl'
+  AND table_name = 'metrics'
+  AND column_name = 'event_date';
+----
+true
+
+query T
+SELECT data_type IN ('TIMESTAMP', 'TIMESTAMP WITHOUT TIME ZONE')
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'out.c-test-ddl'
+  AND table_name = 'metrics'
+  AND column_name = 'created_at';
+----
+true
+
+query T
+SELECT data_type = 'BOOLEAN'
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'out.c-test-ddl'
+  AND table_name = 'metrics'
+  AND column_name = 'is_valid';
+----
+true
+
+##############################################################################
+# 13. DDL on READ_ONLY attachment must fail
+##############################################################################
+
+statement ok
+ATTACH '' AS kbc_ro (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}',
+    READ_ONLY
+);
+
+statement error
+CREATE TABLE kbc_ro."in.c-test-ddl".forbidden (id VARCHAR);
+
+statement error
+DROP TABLE kbc_ro."in.c-test-ddl".products;
+
+statement error
+CREATE SCHEMA kbc_ro."in.c-test-ddl-ro";
+
+statement ok
+DETACH kbc_ro;
+
+##############################################################################
+# Teardown
+##############################################################################
+
+# Drop test tables
+statement ok
+DROP TABLE IF EXISTS kbc."in.c-test-ddl".products;
+
+statement ok
+DROP TABLE IF EXISTS kbc."out.c-test-ddl".metrics;
+
+# Drop test schemas (buckets)
+# Note: DROP SCHEMA CASCADE may not be supported in Phase 1;
+# tables must be dropped individually first.
+statement ok
+DROP SCHEMA IF EXISTS kbc."in.c-test-ddl";
+
+statement ok
+DROP SCHEMA IF EXISTS kbc."out.c-test-ddl";
+
+statement ok
+DETACH kbc;

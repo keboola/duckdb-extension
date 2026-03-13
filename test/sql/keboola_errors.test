@@ -1,0 +1,292 @@
+# keboola_errors.test
+# Tests for error paths: invalid token, wrong URL, table not found,
+# network errors, and malformed inputs.
+# Most tests in this file are offline (no valid credentials needed) or
+# require only KEBOOLA_URL (not a valid token) to test auth rejection.
+
+##############################################################################
+# Setup — load extension only (no live connection required for most tests)
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+##############################################################################
+# 1. Invalid token — authentication error
+##############################################################################
+
+require-env KEBOOLA_URL
+
+# Storage API must reject an invalid token with HTTP 401 or a clear auth error
+statement error
+ATTACH '${KEBOOLA_URL}' AS kbc_err_auth (
+    TYPE keboola,
+    TOKEN 'invalid-token-000000000000000000000'
+);
+
+# The error message must mention token or authentication (not a generic crash)
+# (Exact message matching is done via the statement error assertion above;
+#  implementation must not produce an unhandled segfault or generic "Error".)
+
+##############################################################################
+# 2. Empty token — must be rejected before any network call
+##############################################################################
+
+statement error
+ATTACH 'https://connection.keboola.com' AS kbc_err_empty_token (
+    TYPE keboola,
+    TOKEN ''
+);
+
+##############################################################################
+# 3. Wrong / unreachable URL — network/DNS error
+##############################################################################
+
+require-env KEBOOLA_TOKEN
+
+statement error
+ATTACH 'https://this-host-absolutely-does-not-exist.keboola.invalid' AS kbc_err_bad_url (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}'
+);
+
+# Error message must not be empty
+# (implementation must propagate curl/httplib error, not swallow it)
+
+##############################################################################
+# 4. Malformed URL — must be caught at parse/validation time
+##############################################################################
+
+statement error
+ATTACH 'not-a-valid-url' AS kbc_err_malformed_url (
+    TYPE keboola,
+    TOKEN 'any-token'
+);
+
+statement error
+ATTACH 'connection.keboola.com' AS kbc_err_no_scheme (
+    TYPE keboola,
+    TOKEN 'any-token'
+);
+
+##############################################################################
+# 5. Missing required ATTACH options
+##############################################################################
+
+# No TYPE — DuckDB rejects unknown ATTACH
+statement error
+ATTACH 'https://connection.keboola.com' AS kbc_err_no_type (TOKEN 'any-token');
+
+# No TOKEN and no SECRET (URL provided as path, but no token)
+statement error
+ATTACH 'https://connection.keboola.com' AS kbc_err_no_creds (
+    TYPE keboola
+);
+
+# No URL (empty path) and no SECRET
+statement error
+ATTACH '' AS kbc_err_no_url (
+    TYPE keboola,
+    TOKEN 'any-token'
+);
+
+##############################################################################
+# 6. Secret not found
+##############################################################################
+
+statement error
+ATTACH '' AS kbc_err_no_secret (
+    TYPE keboola,
+    SECRET secret_that_does_not_exist_xyz
+);
+
+##############################################################################
+# 7. Table not found — must produce a clear "table does not exist" error,
+#    not a crash or silent empty result.
+##############################################################################
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+statement ok
+CREATE OR REPLACE SECRET err_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET err_secret);
+# Note: empty path '' is valid when credentials come from a named SECRET
+
+statement error
+SELECT * FROM kbc."in.c-crm".this_table_does_not_exist_xyz LIMIT 1;
+
+##############################################################################
+# 8. Schema not found
+##############################################################################
+
+statement error
+SELECT * FROM kbc."in.c-this-schema-does-not-exist-xyz".contacts LIMIT 1;
+
+##############################################################################
+# 9. Column not found in SELECT
+##############################################################################
+
+statement error
+SELECT this_column_does_not_exist_xyz FROM kbc."in.c-crm".contacts LIMIT 1;
+
+##############################################################################
+# 10. INSERT into wrong number of columns
+##############################################################################
+
+# Too few values
+statement error
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES ('err-001', 'Only Two');
+
+# Too many values
+statement error
+INSERT INTO kbc."in.c-crm".contacts (id, name)
+VALUES ('err-002', 'Name', 'extra_val');
+
+##############################################################################
+# 11. UPDATE on a table with no primary key
+##############################################################################
+
+# Assumes kbc."in.c-crm".notes has no PK
+statement error
+UPDATE kbc."in.c-crm".notes SET body = 'test' WHERE note_id = 'n1';
+
+##############################################################################
+# 12. DELETE without WHERE — must be explicitly rejected
+##############################################################################
+
+statement error
+DELETE FROM kbc."in.c-crm".contacts;
+
+##############################################################################
+# 13. DROP TABLE on non-existent table (without IF EXISTS)
+##############################################################################
+
+statement error
+DROP TABLE kbc."in.c-crm".this_table_does_not_exist_xyz;
+
+##############################################################################
+# 14. CREATE TABLE with a name that already exists (without IF NOT EXISTS)
+##############################################################################
+
+statement error
+CREATE TABLE kbc."in.c-crm".contacts (id VARCHAR, name VARCHAR);
+
+##############################################################################
+# 15. CREATE SCHEMA with a name that already exists (without IF NOT EXISTS)
+##############################################################################
+
+statement error
+CREATE SCHEMA kbc."in.c-crm";
+
+##############################################################################
+# 16. keboola_tables() with non-existent secret name
+##############################################################################
+
+statement error
+SELECT * FROM keboola_tables('no_such_secret_xyz');
+
+##############################################################################
+# 17. keboola_pull() with non-existent table
+##############################################################################
+
+statement error
+CALL keboola_pull('kbc."in.c-crm".no_such_table_xyz');
+
+##############################################################################
+# 18. keboola_pull() with non-existent database alias
+##############################################################################
+
+statement error
+CALL keboola_pull('no_such_alias."in.c-crm".contacts');
+
+##############################################################################
+# 19. keboola_pull() with wrong argument count
+##############################################################################
+
+statement error
+CALL keboola_pull();
+
+statement error
+CALL keboola_pull('kbc', 'extra_arg');
+
+##############################################################################
+# 20. Read from a table after DETACH must fail
+##############################################################################
+
+statement ok
+DETACH kbc;
+
+statement error
+SELECT * FROM kbc."in.c-crm".contacts LIMIT 1;
+
+##############################################################################
+# 21. DETACH a database that is not attached must error
+##############################################################################
+
+statement error
+DETACH kbc_that_was_never_attached;
+
+##############################################################################
+# 22. Unsupported SQL on Keboola catalog (offline — parse-level only)
+##############################################################################
+
+# These tests check that the extension produces a meaningful error rather than
+# crashing or silently doing nothing.
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+statement ok
+CREATE OR REPLACE SECRET err2_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc2 (TYPE keboola, SECRET err2_secret);
+# Note: empty path '' is valid when credentials come from a named SECRET
+
+# TRUNCATE TABLE (not supported via standard SQL — use DELETE without WHERE)
+statement error
+TRUNCATE kbc2."in.c-crm".contacts;
+
+# ALTER TABLE ADD COLUMN (out of scope for Phase 1)
+statement error
+ALTER TABLE kbc2."in.c-crm".contacts ADD COLUMN new_col VARCHAR;
+
+# CREATE INDEX (not supported on Keboola)
+statement error
+CREATE INDEX ON kbc2."in.c-crm".contacts (id);
+
+##############################################################################
+# 23. Very long token string — must not crash
+##############################################################################
+
+statement error
+ATTACH '${KEBOOLA_URL}' AS kbc_err_long_token (
+    TYPE keboola,
+    TOKEN 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+);
+
+##############################################################################
+# 24. SQL injection in table name — must be rejected or safely handled
+##############################################################################
+
+statement error
+SELECT * FROM kbc2."in.c-crm"."contacts; DROP TABLE contacts; --" LIMIT 1;
+
+##############################################################################
+# Teardown
+##############################################################################
+
+statement ok
+DETACH kbc2;

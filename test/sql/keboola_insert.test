@@ -1,0 +1,248 @@
+# keboola_insert.test
+# Tests for INSERT: single row, multi-row batch, INSERT INTO ... SELECT,
+# type coercion, and error cases.
+# Assumes the test project has:
+#   kbc."in.c-crm".contacts  (id VARCHAR PK, name VARCHAR, email VARCHAR, status VARCHAR)
+#   kbc."in.c-crm".companies (id VARCHAR PK, name VARCHAR, domain VARCHAR)
+# These tests are destructive — they write data.  A unique id prefix
+# (e.g. 'test-ins-') is used to avoid collisions with other data.
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+##############################################################################
+# Setup
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+statement ok
+CREATE OR REPLACE SECRET ins_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET ins_secret);
+
+##############################################################################
+# 1. INSERT single row
+##############################################################################
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES ('test-ins-001', 'Test User One', 'test1@example.com', 'active');
+
+# Verify the row was written (may take a moment — incremental job is async)
+query T
+SELECT COUNT(*) >= 1
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-ins-001';
+----
+true
+
+query TTT
+SELECT id, name, email
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-ins-001';
+----
+test-ins-001	Test User One	test1@example.com
+
+##############################################################################
+# 2. INSERT single row — all columns NULL-able fields set to NULL
+##############################################################################
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES ('test-ins-002', 'No Email User', NULL, 'pending');
+
+query T
+SELECT email IS NULL
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-ins-002';
+----
+true
+
+##############################################################################
+# 3. Multi-row INSERT VALUES (batch upload in a single CSV)
+##############################################################################
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES
+    ('test-ins-010', 'Batch User A', 'batcha@example.com', 'active'),
+    ('test-ins-011', 'Batch User B', 'batchb@example.com', 'active'),
+    ('test-ins-012', 'Batch User C', 'batchc@example.com', 'inactive');
+
+query T
+SELECT COUNT(*) = 3
+FROM kbc."in.c-crm".contacts
+WHERE id IN ('test-ins-010', 'test-ins-011', 'test-ins-012');
+----
+true
+
+##############################################################################
+# 4. INSERT INTO ... SELECT from local DuckDB table
+##############################################################################
+
+statement ok
+CREATE TABLE staging_contacts AS
+    SELECT 'test-ins-020' AS id, 'Staged User D' AS name, 'staged_d@example.com' AS email, 'active' AS status
+    UNION ALL
+    SELECT 'test-ins-021', 'Staged User E', 'staged_e@example.com', 'inactive';
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+SELECT id, name, email, status FROM staging_contacts;
+
+query T
+SELECT COUNT(*) = 2
+FROM kbc."in.c-crm".contacts
+WHERE id IN ('test-ins-020', 'test-ins-021');
+----
+true
+
+statement ok
+DROP TABLE staging_contacts;
+
+##############################################################################
+# 5. INSERT INTO ... SELECT from another Keboola table (cross-table copy)
+##############################################################################
+
+# Insert a test company first
+statement ok
+INSERT INTO kbc."in.c-crm".companies (id, name, domain)
+VALUES ('test-ins-co-001', 'Acme Corp', 'acme.com');
+
+query T
+SELECT COUNT(*) >= 1
+FROM kbc."in.c-crm".companies
+WHERE id = 'test-ins-co-001';
+----
+true
+
+##############################################################################
+# 6. INSERT with special characters in strings (CSV encoding check)
+##############################################################################
+
+# Comma, quote, newline in string values — RFC 4180 CSV must handle these
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES ('test-ins-030', 'O''Brien, James', 'obrien@example.com', 'active');
+
+query T
+SELECT name = 'O''Brien, James'
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-ins-030';
+----
+true
+
+# Double-quote in value
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES ('test-ins-031', 'Say "Hello"', 'hello@example.com', 'active');
+
+query T
+SELECT name = 'Say "Hello"'
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-ins-031';
+----
+true
+
+##############################################################################
+# 7. INSERT returns affected row count
+##############################################################################
+
+# DuckDB reports changes count; inserting 2 rows should return 2
+query I
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES ('test-ins-040', 'Count Test A', 'cta@example.com', 'active'),
+       ('test-ins-041', 'Count Test B', 'ctb@example.com', 'active');
+----
+2
+
+##############################################################################
+# 8. INSERT into a non-existent table must error
+##############################################################################
+
+statement error
+INSERT INTO kbc."in.c-crm".no_such_table_xyz (id, name)
+VALUES ('x', 'y');
+
+##############################################################################
+# 9. INSERT into a non-existent schema (bucket) must error
+##############################################################################
+
+statement error
+INSERT INTO kbc."in.c-no-such-bucket-xyz".contacts (id, name)
+VALUES ('x', 'y');
+
+##############################################################################
+# 10. INSERT column count mismatch must error
+##############################################################################
+
+statement error
+INSERT INTO kbc."in.c-crm".contacts (id, name, email)
+VALUES ('x', 'y', 'z', 'extra_col');
+
+##############################################################################
+# 11. Large batch INSERT (stress test — 500 rows)
+##############################################################################
+
+statement ok
+CREATE TABLE large_batch AS
+    SELECT
+        'test-ins-large-' || i::VARCHAR AS id,
+        'User ' || i::VARCHAR AS name,
+        'user' || i::VARCHAR || '@example.com' AS email,
+        CASE WHEN i % 2 = 0 THEN 'active' ELSE 'inactive' END AS status
+    FROM range(1, 501) t(i);
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+SELECT id, name, email, status FROM large_batch;
+
+query T
+SELECT COUNT(*) = 500
+FROM kbc."in.c-crm".contacts
+WHERE id LIKE 'test-ins-large-%';
+----
+true
+
+statement ok
+DROP TABLE large_batch;
+
+##############################################################################
+# 12. INSERT into READ_ONLY attachment must fail
+##############################################################################
+
+statement ok
+ATTACH '' AS kbc_ro (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}',
+    READ_ONLY
+);
+
+statement error
+INSERT INTO kbc_ro."in.c-crm".contacts (id, name, email, status)
+VALUES ('test-ins-ro', 'RO User', 'ro@example.com', 'active');
+
+statement ok
+DETACH kbc_ro;
+
+##############################################################################
+# Teardown
+##############################################################################
+
+# Clean up test rows inserted above (best-effort — use DELETE)
+statement ok
+DELETE FROM kbc."in.c-crm".contacts WHERE id LIKE 'test-ins-%';
+
+statement ok
+DELETE FROM kbc."in.c-crm".companies WHERE id LIKE 'test-ins-%';
+
+statement ok
+DETACH kbc;

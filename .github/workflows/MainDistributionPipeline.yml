@@ -1,0 +1,151 @@
+name: MainDistributionPipeline
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build against DuckDB stable (v1.3.0)
+  # ---------------------------------------------------------------------------
+  duckdb-stable-build:
+    name: Build (DuckDB v1.3.0)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.3.0
+    with:
+      duckdb_version: v1.3.0
+      ci_tools_version: v1.3.0
+      extension_name: keboola
+      enable_rust: false
+
+  # ---------------------------------------------------------------------------
+  # Build against DuckDB main (nightly)
+  # ---------------------------------------------------------------------------
+  duckdb-next-build:
+    name: Build (DuckDB main)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
+    with:
+      duckdb_version: main
+      ci_tools_version: main
+      extension_name: keboola
+      enable_rust: false
+
+  # ---------------------------------------------------------------------------
+  # Offline SQL logic tests — no credentials required
+  # Run after stable build so we use the built binary.
+  # ---------------------------------------------------------------------------
+  offline-tests:
+    name: Offline SQL tests (v1.3.0)
+    needs: duckdb-stable-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download linux_amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux_amd64-v1.3.0
+          path: artifacts/
+
+      - name: Make extension executable
+        run: |
+          find artifacts/ -name "*.duckdb_extension" -exec chmod +x {} \;
+
+      - name: Install DuckDB CLI v1.3.0
+        run: |
+          curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.3.0/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          unzip duckdb.zip -d /usr/local/bin/
+          chmod +x /usr/local/bin/duckdb
+
+      - name: Run offline sqllogictests
+        env:
+          # Explicitly unset any token so tests that need a live connection are skipped
+          KEBOOLA_TOKEN: ""
+        run: |
+          EXT_PATH=$(find artifacts/ -name "keboola.duckdb_extension" | head -1)
+          # Run all test files under test/sql/ that are safe for offline execution
+          # (files that require KEBOOLA_TOKEN are expected to be guarded with
+          # a `require keboola_token` or similar skip directive inside the file)
+          find test/sql/ -name "*.test" | sort | while read f; do
+            echo "==> $f"
+            duckdb -unsigned -cmd \
+              "LOAD '${EXT_PATH}';" \
+              < "$f"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Community extension release — fires only on version tag pushes
+  # ---------------------------------------------------------------------------
+  community-release:
+    name: Community Extension Release
+    needs:
+      - duckdb-stable-build
+      - duckdb-next-build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Download all platform artifacts for the stable build
+      - name: Download all stable build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-v1.3.0"
+          path: artifacts/stable/
+          merge-multiple: false
+
+      - name: Download all next build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-main"
+          path: artifacts/next/
+          merge-multiple: false
+
+      # Upload to S3 via the duckdb extension distribution mechanism
+      - name: Deploy to S3 (stable)
+        if: env.AWS_ACCESS_KEY_ID != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+          DUCKDB_EXTENSION_SIGNING_PK: ${{ secrets.DUCKDB_EXTENSION_SIGNING_PK }}
+          BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          pip install awscli
+          for platform_dir in artifacts/stable/*/; do
+            platform=$(basename "$platform_dir")
+            for ext in "$platform_dir"*.duckdb_extension; do
+              [ -f "$ext" ] || continue
+              s3_key="keboola/v1.3.0/${platform}/keboola.duckdb_extension"
+              aws s3 cp "$ext" "s3://${BUCKET_NAME}/${s3_key}" --acl public-read || true
+            done
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Keboola DuckDB Extension ${{ github.ref_name }}"
+          body: |
+            ## Keboola DuckDB Extension ${{ github.ref_name }}
+
+            Install from DuckDB:
+            ```sql
+            INSTALL keboola FROM community;
+            LOAD keboola;
+            ```
+
+            See the [README](https://github.com/${{ github.repository }}/blob/main/README.md) for usage instructions.
+          generate_release_notes: true
+          files: |
+            artifacts/stable/**/*.duckdb_extension
+            artifacts/next/**/*.duckdb_extension

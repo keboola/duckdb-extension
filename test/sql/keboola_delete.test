@@ -1,0 +1,289 @@
+# keboola_delete.test
+# Tests for DELETE: single value WHERE, IN list, != operator,
+# DELETE without WHERE (truncate), error cases, and READ_ONLY guard.
+# Assumes:
+#   kbc."in.c-crm".contacts (id VARCHAR PK, name VARCHAR, email VARCHAR, status VARCHAR)
+# All test rows use the 'test-del-' id prefix.
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+##############################################################################
+# Setup
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+statement ok
+CREATE OR REPLACE SECRET del_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET del_secret);
+
+# Seed test data for delete tests
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES
+    ('test-del-001', 'Del User A', 'dela@example.com',  'archived'),
+    ('test-del-002', 'Del User B', 'delb@example.com',  'deleted'),
+    ('test-del-003', 'Del User C', 'delc@example.com',  'active'),
+    ('test-del-004', 'Del User D', 'deld@example.com',  'active'),
+    ('test-del-005', 'Del User E', 'dele@example.com',  'archived'),
+    ('test-del-006', 'Del User F', 'delf@example.com',  'pending'),
+    ('test-del-007', 'Del User G', 'delg@example.com',  'active');
+
+##############################################################################
+# 1. DELETE with single equality WHERE
+##############################################################################
+
+statement ok
+DELETE FROM kbc."in.c-crm".contacts WHERE id = 'test-del-001';
+
+query T
+SELECT COUNT(*) = 0
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-del-001';
+----
+true
+
+# Other rows must not be affected
+query T
+SELECT COUNT(*) = 1
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-del-002';
+----
+true
+
+##############################################################################
+# 2. DELETE with IN list
+##############################################################################
+
+statement ok
+DELETE FROM kbc."in.c-crm".contacts
+WHERE id IN ('test-del-002', 'test-del-003');
+
+query T
+SELECT COUNT(*) = 0
+FROM kbc."in.c-crm".contacts
+WHERE id IN ('test-del-002', 'test-del-003');
+----
+true
+
+# test-del-004 must still exist
+query T
+SELECT COUNT(*) = 1
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-del-004';
+----
+true
+
+##############################################################################
+# 3. DELETE with != (not-equals) operator
+##############################################################################
+
+# Delete all rows with status != 'active' (among remaining test rows)
+statement ok
+DELETE FROM kbc."in.c-crm".contacts
+WHERE id LIKE 'test-del-%' AND status != 'active';
+
+# Only active rows should survive
+query T
+SELECT COUNT(*) = 0
+FROM kbc."in.c-crm".contacts
+WHERE id LIKE 'test-del-%' AND status != 'active';
+----
+true
+
+# Active rows must still be present
+query T
+SELECT COUNT(*) >= 1
+FROM kbc."in.c-crm".contacts
+WHERE id LIKE 'test-del-%' AND status = 'active';
+----
+true
+
+##############################################################################
+# 4. DELETE by non-PK column (status column filter)
+##############################################################################
+
+# Seed rows with a distinct status for a column-based delete
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES
+    ('test-del-020', 'To Remove X', 'removex@example.com', 'to_remove'),
+    ('test-del-021', 'To Remove Y', 'removey@example.com', 'to_remove'),
+    ('test-del-022', 'Keep This',   'keep@example.com',    'keep_me');
+
+statement ok
+DELETE FROM kbc."in.c-crm".contacts WHERE status = 'to_remove';
+
+query T
+SELECT COUNT(*) = 0
+FROM kbc."in.c-crm".contacts
+WHERE status = 'to_remove';
+----
+true
+
+# keep_me row must be untouched
+query T
+SELECT COUNT(*) = 1
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-del-022' AND status = 'keep_me';
+----
+true
+
+##############################################################################
+# 5. DELETE with multi-value IN on a non-PK column
+##############################################################################
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES
+    ('test-del-030', 'Archived A', 'arch_a@example.com', 'archived'),
+    ('test-del-031', 'Archived B', 'arch_b@example.com', 'deleted'),
+    ('test-del-032', 'Active Z',   'active_z@example.com', 'active');
+
+statement ok
+DELETE FROM kbc."in.c-crm".contacts
+WHERE status IN ('archived', 'deleted') AND id LIKE 'test-del-03%';
+
+query T
+SELECT COUNT(*) = 0
+FROM kbc."in.c-crm".contacts
+WHERE id IN ('test-del-030', 'test-del-031');
+----
+true
+
+query T
+SELECT COUNT(*) = 1
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-del-032';
+----
+true
+
+##############################################################################
+# 6. DELETE on a non-existent row — must succeed (0 rows deleted), no error
+##############################################################################
+
+statement ok
+DELETE FROM kbc."in.c-crm".contacts WHERE id = 'test-del-nonexistent-xyz';
+
+##############################################################################
+# 7. DELETE without WHERE — must require allowTruncate / explicit confirmation
+# The extension MUST NOT silently truncate the table.
+##############################################################################
+
+statement error
+DELETE FROM kbc."in.c-crm".contacts;
+
+##############################################################################
+# 8. Multi-column WHERE — Storage API supports only single column;
+#    implementation must either support this via client-side filtering
+#    or return a clear NOT SUPPORTED error.
+##############################################################################
+
+# Multi-column AND delete — behavior depends on implementation
+# Either succeeds (extension handles it) or errors with clear message
+statement error
+DELETE FROM kbc."in.c-crm".contacts
+WHERE status = 'archived' AND name = 'Test';
+
+##############################################################################
+# 9. DELETE returns affected row count
+##############################################################################
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES
+    ('test-del-count-1', 'Count A', 'ca@example.com', 'count_test'),
+    ('test-del-count-2', 'Count B', 'cb@example.com', 'count_test');
+
+query I
+DELETE FROM kbc."in.c-crm".contacts WHERE status = 'count_test';
+----
+2
+
+##############################################################################
+# 10. DELETE from non-existent table must error
+##############################################################################
+
+statement error
+DELETE FROM kbc."in.c-crm".no_such_table_xyz WHERE id = '1';
+
+##############################################################################
+# 11. DELETE from non-existent schema must error
+##############################################################################
+
+statement error
+DELETE FROM kbc."in.c-no-such-bucket-xyz".contacts WHERE id = '1';
+
+##############################################################################
+# 12. DELETE on READ_ONLY attachment must fail
+##############################################################################
+
+statement ok
+ATTACH '' AS kbc_ro (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}',
+    READ_ONLY
+);
+
+statement error
+DELETE FROM kbc_ro."in.c-crm".contacts WHERE id = 'test-del-004';
+
+statement ok
+DETACH kbc_ro;
+
+##############################################################################
+# 13. DELETE async job polling — large delete completes eventually
+##############################################################################
+
+# Seed 100 rows and delete them all by a shared status value (single column)
+statement ok
+CREATE TABLE delete_seed AS
+    SELECT
+        'test-del-bulk-' || i::VARCHAR AS id,
+        'Bulk ' || i::VARCHAR AS name,
+        'bulk' || i::VARCHAR || '@example.com' AS email,
+        'bulk_delete_target' AS status
+    FROM range(1, 101) t(i);
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+SELECT id, name, email, status FROM delete_seed;
+
+statement ok
+DROP TABLE delete_seed;
+
+query T
+SELECT COUNT(*) = 100
+FROM kbc."in.c-crm".contacts
+WHERE status = 'bulk_delete_target';
+----
+true
+
+statement ok
+DELETE FROM kbc."in.c-crm".contacts WHERE status = 'bulk_delete_target';
+
+query T
+SELECT COUNT(*) = 0
+FROM kbc."in.c-crm".contacts
+WHERE status = 'bulk_delete_target';
+----
+true
+
+##############################################################################
+# Teardown
+##############################################################################
+
+statement ok
+DELETE FROM kbc."in.c-crm".contacts WHERE id LIKE 'test-del-%';
+
+statement ok
+DETACH kbc;

@@ -1,0 +1,15 @@
+{
+  "name": "keboola-duckdb-extension",
+  "version": "0.1.0",
+  "dependencies": [
+    {
+      "name": "cpp-httplib",
+      "features": ["ssl"]
+    }
+  ],
+  "vcpkg-configuration": {
+    "overlay-ports": [
+      "./extension-ci-tools/vcpkg_ports"
+    ]
+  }
+}

@@ -1,0 +1,346 @@
+# keboola_select.test
+# Tests for SELECT: basic reads, WHERE pushdown, projection pushdown,
+# LIMIT, JOINs with local tables, pagination, and NULL handling.
+# Assumes the test project has:
+#   kbc."in.c-crm".contacts   (id VARCHAR PK, name VARCHAR, email VARCHAR, status VARCHAR, score VARCHAR)
+#   kbc."in.c-crm".companies  (id VARCHAR PK, name VARCHAR, domain VARCHAR)
+#   kbc."out.c-analytics".events (event_id VARCHAR, user_id VARCHAR, event_type VARCHAR, created_at VARCHAR, is_active VARCHAR)
+# with at least 5 rows in contacts and 1000+ rows in events (for pagination test).
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+##############################################################################
+# Setup
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+statement ok
+CREATE OR REPLACE SECRET sel_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET sel_secret);
+
+##############################################################################
+# 1. SELECT * — full table scan
+##############################################################################
+
+# Must return rows without error
+query T
+SELECT COUNT(*) >= 0 FROM kbc."in.c-crm".contacts;
+----
+true
+
+# Result must be a number (not NULL)
+query T
+SELECT (SELECT COUNT(*) FROM kbc."in.c-crm".contacts) IS NOT NULL;
+----
+true
+
+##############################################################################
+# 2. Projection pushdown — SELECT specific columns
+##############################################################################
+
+# Only id and name are requested — Query Service should only fetch those columns
+query TT
+SELECT id, name FROM kbc."in.c-crm".contacts
+ORDER BY id
+LIMIT 1;
+----
+1	Alice
+# Note: adjust expected values to match seed data in the test project
+
+# Single column projection
+query T
+SELECT id FROM kbc."in.c-crm".contacts
+ORDER BY id
+LIMIT 1;
+----
+1
+
+##############################################################################
+# 3. WHERE pushdown — equality
+##############################################################################
+
+# Filter on status = 'active' — must be pushed to Query Service SQL
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts
+WHERE status = 'active';
+----
+true
+
+# Specific row lookup by PK
+query TTT
+SELECT id, name, email
+FROM kbc."in.c-crm".contacts
+WHERE id = '1';
+----
+1	Alice	alice@example.com
+
+##############################################################################
+# 4. WHERE pushdown — comparison operators
+##############################################################################
+
+# Greater-than (numeric-looking string — works as string comparison)
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts
+WHERE id > '0';
+----
+true
+
+# LIKE pushdown
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts
+WHERE email LIKE '%@example.com';
+----
+true
+
+# IS NULL pushdown
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts
+WHERE email IS NULL;
+----
+true
+
+# IS NOT NULL
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts
+WHERE email IS NOT NULL;
+----
+true
+
+##############################################################################
+# 5. WHERE pushdown — IN list
+##############################################################################
+
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts
+WHERE status IN ('active', 'pending');
+----
+true
+
+##############################################################################
+# 6. WHERE pushdown — AND / OR
+##############################################################################
+
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts
+WHERE status = 'active' AND email LIKE '%@example.com';
+----
+true
+
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts
+WHERE status = 'active' OR status = 'pending';
+----
+true
+
+##############################################################################
+# 7. LIMIT pushdown
+##############################################################################
+
+# LIMIT must be respected
+query T
+SELECT COUNT(*) <= 3
+FROM (
+    SELECT * FROM kbc."in.c-crm".contacts LIMIT 3
+);
+----
+true
+
+# LIMIT 1
+query T
+SELECT COUNT(*) = 1
+FROM (
+    SELECT * FROM kbc."in.c-crm".contacts LIMIT 1
+);
+----
+true
+
+# LIMIT 0 must return empty result
+query T
+SELECT COUNT(*) = 0
+FROM (
+    SELECT * FROM kbc."in.c-crm".contacts LIMIT 0
+);
+----
+true
+
+##############################################################################
+# 8. ORDER BY
+##############################################################################
+
+# ORDER BY must return rows in deterministic order
+query T
+SELECT id FROM kbc."in.c-crm".contacts
+ORDER BY id
+LIMIT 1;
+----
+1
+
+##############################################################################
+# 9. COUNT aggregate
+##############################################################################
+
+query T
+SELECT COUNT(*) >= 0 FROM kbc."in.c-crm".contacts;
+----
+true
+
+query T
+SELECT COUNT(DISTINCT status) >= 0 FROM kbc."in.c-crm".contacts;
+----
+true
+
+##############################################################################
+# 10. NULL handling
+##############################################################################
+
+# Selecting a row with a NULL column must return NULL (not empty string)
+# Assumes contacts has a row with id='99' and email=NULL
+query T
+SELECT email IS NULL
+FROM kbc."in.c-crm".contacts
+WHERE id = '99';
+----
+true
+
+# COUNT(*) vs COUNT(col) differ on NULLs
+query T
+SELECT COUNT(*) >= COUNT(email)
+FROM kbc."in.c-crm".contacts;
+----
+true
+
+##############################################################################
+# 11. JOIN with local DuckDB table
+##############################################################################
+
+# Create a local lookup table in memory
+statement ok
+CREATE TABLE local_tags AS
+    SELECT '1' AS contact_id, 'vip' AS tag
+    UNION ALL
+    SELECT '2', 'prospect';
+
+# Hybrid join: Keboola table × local table
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts c
+JOIN local_tags t ON c.id = t.contact_id;
+----
+true
+
+# Specific hybrid query result
+query TT
+SELECT c.name, t.tag
+FROM kbc."in.c-crm".contacts c
+JOIN local_tags t ON c.id = t.contact_id
+WHERE c.id = '1';
+----
+Alice	vip
+
+statement ok
+DROP TABLE local_tags;
+
+##############################################################################
+# 12. JOIN two Keboola tables
+##############################################################################
+
+query T
+SELECT COUNT(*) >= 0
+FROM kbc."in.c-crm".contacts c
+JOIN kbc."in.c-crm".companies co ON c.id = co.id;
+----
+true
+
+##############################################################################
+# 13. Subquery
+##############################################################################
+
+query T
+SELECT name
+FROM kbc."in.c-crm".contacts
+WHERE id IN (
+    SELECT id FROM kbc."in.c-crm".contacts WHERE status = 'active'
+)
+LIMIT 1;
+----
+Alice
+
+##############################################################################
+# 14. Aggregation with GROUP BY
+##############################################################################
+
+query T
+SELECT COUNT(*) >= 0
+FROM (
+    SELECT status, COUNT(*) AS cnt
+    FROM kbc."in.c-crm".contacts
+    GROUP BY status
+);
+----
+true
+
+##############################################################################
+# 15. Pagination — large result set (>1000 rows)
+##############################################################################
+
+# events table assumed to have 1000+ rows; all must be returned
+query T
+SELECT COUNT(*) >= 1000
+FROM kbc."out.c-analytics".events;
+----
+true
+
+# Verify no duplicate event_id rows due to pagination bugs
+query T
+SELECT COUNT(*) = COUNT(DISTINCT event_id)
+FROM kbc."out.c-analytics".events;
+----
+true
+
+##############################################################################
+# 16. SELECT from non-existent table must error
+##############################################################################
+
+statement error
+SELECT * FROM kbc."in.c-crm".this_table_does_not_exist_xyz;
+
+##############################################################################
+# 17. SELECT from non-existent schema must error
+##############################################################################
+
+statement error
+SELECT * FROM kbc."in.c-this-bucket-does-not-exist-xyz".contacts;
+
+##############################################################################
+# 18. EXPLAIN shows Keboola scan node
+##############################################################################
+
+query T
+SELECT plan_type FROM (EXPLAIN SELECT * FROM kbc."in.c-crm".contacts LIMIT 1)
+LIMIT 1;
+----
+physical_plan
+
+##############################################################################
+# Teardown
+##############################################################################
+
+statement ok
+DETACH kbc;

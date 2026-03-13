@@ -1,0 +1,83 @@
+version: "3.9"
+
+# =============================================================================
+# Docker Compose for the Keboola DuckDB Extension test suite.
+#
+# Services:
+#   test-offline  — runs the sqllogictest offline suite (no credentials needed)
+#   test-e2e      — runs the pytest E2E suite (requires KEBOOLA_TOKEN + KEBOOLA_URL)
+#
+# Usage:
+#   # Build once
+#   docker compose build
+#
+#   # Run offline tests (always safe for CI):
+#   docker compose run --rm test-offline
+#
+#   # Run E2E live tests (requires env vars from host):
+#   KEBOOLA_TOKEN=... KEBOOLA_URL=... docker compose run --rm test-e2e
+#
+#   # Run both in sequence:
+#   docker compose up --abort-on-container-exit
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # test-offline
+  # Runs the sqllogictest suite (.test files) that require no Keboola credentials.
+  # ---------------------------------------------------------------------------
+  test-offline:
+    build:
+      context: ../..          # project root (so COPY . . picks up everything)
+      dockerfile: test/docker/Dockerfile
+      target: tester          # use the tester stage (extension already compiled)
+    image: keboola-duckdb-extension-test:latest
+    environment:
+      KEBOOLA_EXTENSION_PATH: /app/extension/keboola.duckdb_extension
+    command:
+      - |
+        set -e
+        echo "=== Running offline sqllogictest suite ==="
+        cd /app
+        PASS=0; FAIL=0
+        for f in test/sql/*.test; do
+          echo "-- $$f"
+          if duckdb -unsigned :memory: -bail < "$$f"; then
+            PASS=$$((PASS+1))
+          else
+            FAIL=$$((FAIL+1))
+            echo "FAILED: $$f"
+          fi
+        done
+        echo ""
+        echo "=== sqllogictest results: $$PASS passed, $$FAIL failed ==="
+        exit $$FAIL
+
+  # ---------------------------------------------------------------------------
+  # test-e2e
+  # Runs the pytest E2E suite against a live Keboola project.
+  # Credentials are injected from the host environment.
+  # ---------------------------------------------------------------------------
+  test-e2e:
+    build:
+      context: ../..
+      dockerfile: test/docker/Dockerfile
+      target: tester
+    image: keboola-duckdb-extension-test:latest
+    environment:
+      KEBOOLA_EXTENSION_PATH: /app/extension/keboola.duckdb_extension
+      # Pass from host — docker compose inherits these if set in the shell
+      KEBOOLA_TOKEN: ${KEBOOLA_TOKEN:-}
+      KEBOOLA_URL: ${KEBOOLA_URL:-https://connection.keboola.com}
+    command:
+      - |
+        set -e
+        if [ -z "$$KEBOOLA_TOKEN" ]; then
+          echo "ERROR: KEBOOLA_TOKEN is required for the E2E test suite."
+          echo "Set it in your environment before running docker compose."
+          exit 1
+        fi
+        echo "=== Running E2E pytest suite ==="
+        cd /app/test/e2e
+        python3 -m pytest -v --timeout=60 -m live .

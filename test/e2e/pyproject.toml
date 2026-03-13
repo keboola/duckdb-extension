@@ -1,0 +1,19 @@
+[project]
+name = "keboola-duckdb-extension-tests"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.0.0",
+    "pytest>=8.0.0",
+    "pytest-timeout>=2.3.0",
+    "pandas>=2.0.0",
+    "requests>=2.31.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+markers = [
+    "live: requires live Keboola connection (KEBOOLA_TOKEN + KEBOOLA_URL)",
+    "offline: no network required, always runnable in CI",
+]
+timeout = 60

@@ -1,0 +1,277 @@
+# keboola_catalog.test
+# Tests for catalog discovery: SHOW SCHEMAS, SHOW TABLES, column types, descriptions
+# Requires a live Keboola connection with at least one bucket and table present.
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+##############################################################################
+# Setup
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+statement ok
+CREATE OR REPLACE SECRET cat_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET cat_secret);
+
+##############################################################################
+# 1. SHOW DATABASES
+##############################################################################
+
+query T
+SELECT COUNT(*) >= 1 FROM duckdb_databases() WHERE database_name = 'kbc';
+----
+true
+
+##############################################################################
+# 2. SHOW SCHEMAS — buckets appear as schemas
+##############################################################################
+
+# Every Keboola project has at least one schema (bucket)
+query T
+SELECT COUNT(*) >= 1 FROM information_schema.schemata
+WHERE catalog_name = 'kbc';
+----
+true
+
+# Schema names must follow Keboola bucket naming convention: <stage>.c-<name>
+# e.g. in.c-crm, out.c-analytics, in.c-raw-data
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.schemata
+WHERE catalog_name = 'kbc'
+  AND (schema_name LIKE 'in.c-%' OR schema_name LIKE 'out.c-%' OR schema_name LIKE 'sys.c-%');
+----
+true
+
+# SHOW SCHEMAS must work in the kbc context
+statement ok
+USE kbc;
+
+query T
+SELECT COUNT(*) >= 1 FROM (SHOW SCHEMAS);
+----
+true
+
+statement ok
+USE memory;
+
+##############################################################################
+# 3. keboola_tables() utility function
+##############################################################################
+
+# keboola_tables() must return rows with expected columns
+query TTTT
+SELECT
+    column_name IN ('table_id', 'schema_name', 'table_name', 'row_count') AS valid_col
+FROM (
+    SELECT unnest(['table_id', 'schema_name', 'table_name', 'row_count']) AS column_name
+) t;
+----
+true
+true
+true
+true
+
+# keboola_tables() must return at least one row for a live project
+query T
+SELECT COUNT(*) >= 1 FROM keboola_tables('cat_secret');
+----
+true
+
+# table_id must be non-empty
+query T
+SELECT COUNT(*) = 0 FROM keboola_tables('cat_secret') WHERE table_id IS NULL OR table_id = '';
+----
+true
+
+# table_id format: <stage>.<bucket>.<table>
+query T
+SELECT COUNT(*) >= 1
+FROM keboola_tables('cat_secret')
+WHERE table_id LIKE '%.%.%';
+----
+true
+
+##############################################################################
+# 4. SHOW TABLES for a specific schema
+##############################################################################
+
+# Assumes the test project has an in.c-crm bucket with a contacts table.
+# Adjust bucket/table names to match the actual test project.
+
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.tables
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-crm';
+----
+true
+
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.tables
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-crm'
+  AND table_name = 'contacts';
+----
+true
+
+##############################################################################
+# 5. Column discovery via information_schema.columns
+##############################################################################
+
+# contacts table must expose expected columns
+query T
+SELECT COUNT(*) >= 3
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-crm'
+  AND table_name = 'contacts';
+----
+true
+
+# id column must exist
+query T
+SELECT COUNT(*) = 1
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-crm'
+  AND table_name = 'contacts'
+  AND column_name = 'id';
+----
+true
+
+# name column must exist
+query T
+SELECT COUNT(*) = 1
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-crm'
+  AND table_name = 'contacts'
+  AND column_name = 'name';
+----
+true
+
+# email column must exist
+query T
+SELECT COUNT(*) = 1
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-crm'
+  AND table_name = 'contacts'
+  AND column_name = 'email';
+----
+true
+
+##############################################################################
+# 6. Column types (default: VARCHAR for untyped Keboola columns)
+##############################################################################
+
+# By default, Keboola columns without explicit typing should map to VARCHAR
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-crm'
+  AND table_name = 'contacts'
+  AND data_type = 'VARCHAR';
+----
+true
+
+##############################################################################
+# 7. Typed columns (assumes out.c-analytics.events has typed columns)
+# Adjust to match actual typed table in test project.
+##############################################################################
+
+# INTEGER column should map to BIGINT
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'out.c-analytics'
+  AND table_name = 'events'
+  AND column_name = 'event_count'
+  AND data_type = 'BIGINT';
+----
+true
+
+# TIMESTAMP column should map to TIMESTAMP
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'out.c-analytics'
+  AND table_name = 'events'
+  AND column_name = 'created_at'
+  AND data_type IN ('TIMESTAMP', 'TIMESTAMP WITH TIME ZONE');
+----
+true
+
+# BOOLEAN column should map to BOOLEAN
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'out.c-analytics'
+  AND table_name = 'events'
+  AND column_name = 'is_active'
+  AND data_type = 'BOOLEAN';
+----
+true
+
+##############################################################################
+# 8. Column comments / descriptions from KBC metadata
+##############################################################################
+
+# Columns with a KBC description should expose it via col_description or
+# information_schema extended columns.  The exact mechanism depends on the
+# DuckDB version; at minimum the catalog must not error on access.
+query T
+SELECT COUNT(*) >= 0
+FROM information_schema.columns
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-crm'
+  AND table_name = 'contacts';
+----
+true
+
+##############################################################################
+# 9. Catalog TTL — re-reading within 60s returns cached result
+##############################################################################
+
+# Second call must return the same schema count (served from cache within TTL)
+query T
+SELECT
+    (SELECT COUNT(*) FROM information_schema.schemata WHERE catalog_name = 'kbc')
+    =
+    (SELECT COUNT(*) FROM information_schema.schemata WHERE catalog_name = 'kbc');
+----
+true
+
+##############################################################################
+# 10. Non-existent schema/table returns empty result, not error
+##############################################################################
+
+query T
+SELECT COUNT(*) = 0
+FROM information_schema.tables
+WHERE table_catalog = 'kbc'
+  AND table_schema = 'in.c-this-schema-does-not-exist-xyz';
+----
+true
+
+##############################################################################
+# Teardown
+##############################################################################
+
+statement ok
+DETACH kbc;

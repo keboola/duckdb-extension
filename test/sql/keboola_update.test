@@ -1,0 +1,235 @@
+# keboola_update.test
+# Tests for UPDATE: single-row update, multi-row update, SET multiple columns,
+# missing PK errors, WHERE without PK errors, and row-not-found behavior.
+# Assumes:
+#   kbc."in.c-crm".contacts       (id VARCHAR PK, name VARCHAR, email VARCHAR, status VARCHAR, score VARCHAR)
+#   kbc."in.c-crm".notes          (note_id VARCHAR, body VARCHAR)  -- NO primary key
+# All test rows use the 'test-upd-' id prefix.
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+##############################################################################
+# Setup
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+statement ok
+CREATE OR REPLACE SECRET upd_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET upd_secret);
+
+# Seed test data
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status, score)
+VALUES
+    ('test-upd-001', 'Alice Update', 'alice.old@example.com', 'active', '10'),
+    ('test-upd-002', 'Bob Update',   'bob.old@example.com',   'active', '20'),
+    ('test-upd-003', 'Carol Update', 'carol.old@example.com', 'pending', '30');
+
+##############################################################################
+# 1. UPDATE single column on single row
+##############################################################################
+
+statement ok
+UPDATE kbc."in.c-crm".contacts
+SET email = 'alice.new@example.com'
+WHERE id = 'test-upd-001';
+
+query T
+SELECT email = 'alice.new@example.com'
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-upd-001';
+----
+true
+
+# Other columns must remain unchanged
+query T
+SELECT name = 'Alice Update'
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-upd-001';
+----
+true
+
+##############################################################################
+# 2. UPDATE multiple columns on single row
+##############################################################################
+
+statement ok
+UPDATE kbc."in.c-crm".contacts
+SET email = 'bob.new@example.com', status = 'inactive', score = '99'
+WHERE id = 'test-upd-002';
+
+query TTT
+SELECT email, status, score
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-upd-002';
+----
+bob.new@example.com	inactive	99
+
+##############################################################################
+# 3. UPDATE multiple rows matching the same WHERE condition
+##############################################################################
+
+# Seed two more rows with status='pending'
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status, score)
+VALUES
+    ('test-upd-010', 'Pending A', 'pa@example.com', 'pending', '1'),
+    ('test-upd-011', 'Pending B', 'pb@example.com', 'pending', '2');
+
+statement ok
+UPDATE kbc."in.c-crm".contacts
+SET status = 'archived'
+WHERE id IN ('test-upd-010', 'test-upd-011');
+
+query T
+SELECT COUNT(*) = 2
+FROM kbc."in.c-crm".contacts
+WHERE id IN ('test-upd-010', 'test-upd-011')
+  AND status = 'archived';
+----
+true
+
+##############################################################################
+# 4. UPDATE that sets a column to NULL
+##############################################################################
+
+statement ok
+UPDATE kbc."in.c-crm".contacts
+SET score = NULL
+WHERE id = 'test-upd-003';
+
+query T
+SELECT score IS NULL
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-upd-003';
+----
+true
+
+##############################################################################
+# 5. UPDATE on a row that doesn't exist — must not error, 0 rows affected
+##############################################################################
+
+statement ok
+UPDATE kbc."in.c-crm".contacts
+SET status = 'active'
+WHERE id = 'test-upd-nonexistent-xyz';
+
+query T
+SELECT COUNT(*) = 0
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-upd-nonexistent-xyz';
+----
+true
+
+##############################################################################
+# 6. UPDATE on a table WITHOUT a primary key — must error
+##############################################################################
+
+# notes table has no PK defined in Keboola
+statement error
+UPDATE kbc."in.c-crm".notes
+SET body = 'new body'
+WHERE note_id = 'n1';
+
+##############################################################################
+# 7. UPDATE WHERE referencing a non-PK column (when table has a PK)
+##############################################################################
+
+# UPDATE by a non-PK column forces a full scan — implementation may reject this
+# or support it by fetching all matching rows.  Either a success or an explicit
+# NOT SUPPORTED error is acceptable; the test simply ensures no silent data
+# corruption (i.e. wrong rows are NOT silently modified).
+# Strategy: run the update, then verify non-targeted rows are unchanged.
+
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status, score)
+VALUES ('test-upd-020', 'Non-PK Target', 'npt@example.com', 'active', '5');
+
+# This is either allowed (implementation fetches matching rows) or errors.
+# Wrap in a try-style: if it errors, that is acceptable.
+# If it succeeds, the row must be correctly updated.
+statement ok
+UPDATE kbc."in.c-crm".contacts
+SET score = '55'
+WHERE status = 'active' AND id = 'test-upd-020';
+
+query T
+SELECT score = '55'
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-upd-020';
+----
+true
+
+##############################################################################
+# 8. UPDATE with no WHERE clause — must be rejected
+# Updating ALL rows without a WHERE is dangerous; the extension must require
+# an explicit WHERE with at least the PK column.
+##############################################################################
+
+statement error
+UPDATE kbc."in.c-crm".contacts
+SET status = 'archived';
+
+##############################################################################
+# 9. Concurrent-style UPDATE: update then immediately re-read
+##############################################################################
+
+statement ok
+UPDATE kbc."in.c-crm".contacts
+SET email = 'carol.updated@example.com'
+WHERE id = 'test-upd-003';
+
+query T
+SELECT email = 'carol.updated@example.com'
+FROM kbc."in.c-crm".contacts
+WHERE id = 'test-upd-003';
+----
+true
+
+##############################################################################
+# 10. UPDATE on READ_ONLY attachment must fail
+##############################################################################
+
+statement ok
+ATTACH '' AS kbc_ro (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}',
+    READ_ONLY
+);
+
+statement error
+UPDATE kbc_ro."in.c-crm".contacts
+SET status = 'inactive'
+WHERE id = 'test-upd-001';
+
+statement ok
+DETACH kbc_ro;
+
+##############################################################################
+# 11. UPDATE in a non-existent table must error
+##############################################################################
+
+statement error
+UPDATE kbc."in.c-crm".no_such_table_xyz
+SET status = 'x'
+WHERE id = '1';
+
+##############################################################################
+# Teardown
+##############################################################################
+
+statement ok
+DELETE FROM kbc."in.c-crm".contacts WHERE id LIKE 'test-upd-%';
+
+statement ok
+DETACH kbc;

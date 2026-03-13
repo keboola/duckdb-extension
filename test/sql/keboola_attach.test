@@ -1,0 +1,250 @@
+# keboola_attach.test
+# Tests for ATTACH, secret creation, and error cases
+# Live-connection tests require KEBOOLA_TOKEN and KEBOOLA_URL environment variables.
+
+##############################################################################
+# 1. Extension loading
+##############################################################################
+
+# The extension must load without errors
+statement ok
+LOAD keboola;
+
+# keboola_version() must return a non-empty string
+query T
+SELECT keboola_version() IS NOT NULL;
+----
+true
+
+query T
+SELECT keboola_version() != '';
+----
+true
+
+##############################################################################
+# 2. Secret creation — valid inputs
+##############################################################################
+
+# Create a secret with TOKEN + URL only (minimal)
+statement ok
+CREATE SECRET kbc_minimal (
+    TYPE keboola,
+    TOKEN 'sapi-token-test-minimal',
+    URL 'https://connection.keboola.com'
+);
+
+# Create a secret with TOKEN + URL + BRANCH
+statement ok
+CREATE SECRET kbc_with_branch (
+    TYPE keboola,
+    TOKEN 'sapi-token-test-branch',
+    URL 'https://connection.keboola.com',
+    BRANCH 'main'
+);
+
+# Create a secret targeting a different stack
+statement ok
+CREATE SECRET kbc_eu (
+    TYPE keboola,
+    TOKEN 'sapi-token-eu',
+    URL 'https://connection.eu-central-1.keboola.com'
+);
+
+# Secrets should be visible via duckdb_secrets()
+query T
+SELECT COUNT(*) >= 3 FROM duckdb_secrets() WHERE type = 'keboola';
+----
+true
+
+##############################################################################
+# 3. Secret creation — error cases
+##############################################################################
+
+# Missing TOKEN must fail
+statement error
+CREATE SECRET kbc_no_token (
+    TYPE keboola,
+    URL 'https://connection.keboola.com'
+);
+
+# Missing URL must fail
+statement error
+CREATE SECRET kbc_no_url (
+    TYPE keboola,
+    TOKEN 'sapi-token-xxx'
+);
+
+# Unknown option must fail
+statement error
+CREATE SECRET kbc_unknown_opt (
+    TYPE keboola,
+    TOKEN 'sapi-token-xxx',
+    URL 'https://connection.keboola.com',
+    UNKNOWN_OPTION 'value'
+);
+
+##############################################################################
+# 4. ATTACH syntax variants — offline / parse-level checks
+#
+# New syntax: ATTACH 'https://...' AS kbc (TYPE keboola, TOKEN '...')
+# The URL is passed as the path argument (first positional string).
+##############################################################################
+
+# ATTACH with inline TOKEN via path-URL — parse accepted, fails at connection time
+statement error
+ATTACH 'https://connection.keboola.com' AS kbc_parse_check (
+    TYPE keboola,
+    TOKEN 'bad-token'
+);
+
+# ATTACH with a non-existent secret name must produce a descriptive error
+statement error
+ATTACH '' AS kbc_bad_secret (
+    TYPE keboola,
+    SECRET no_such_secret_xyz
+);
+
+# ATTACH with READ_ONLY flag — parse check
+statement error
+ATTACH 'https://connection.keboola.com' AS kbc_ro_parse (
+    TYPE keboola,
+    TOKEN 'bad-token',
+    READ_ONLY
+);
+
+# ATTACH with SNAPSHOT flag — parse check
+statement error
+ATTACH 'https://connection.keboola.com' AS kbc_snap_parse (
+    TYPE keboola,
+    TOKEN 'bad-token',
+    SNAPSHOT
+);
+
+##############################################################################
+# 5. ATTACH with invalid credentials (live network, expected auth error)
+##############################################################################
+
+require-env KEBOOLA_URL
+
+# Invalid token must produce an authentication error
+statement error
+ATTACH '${KEBOOLA_URL}' AS kbc_invalid (
+    TYPE keboola,
+    TOKEN 'this-token-is-definitely-invalid-000'
+);
+
+##############################################################################
+# 6. Successful ATTACH and DETACH (requires live credentials)
+##############################################################################
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+# Attach using inline credentials — URL is the path argument
+statement ok
+ATTACH '${KEBOOLA_URL}' AS kbc (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}'
+);
+
+# The database should appear in duckdb_databases()
+query T
+SELECT COUNT(*) >= 1 FROM duckdb_databases() WHERE database_name = 'kbc';
+----
+true
+
+# keboola_version() still works after attach
+query T
+SELECT keboola_version() != '';
+----
+true
+
+# DETACH must succeed
+statement ok
+DETACH kbc;
+
+# After DETACH the database must be gone
+query T
+SELECT COUNT(*) FROM duckdb_databases() WHERE database_name = 'kbc';
+----
+0
+
+##############################################################################
+# 7. ATTACH using a pre-created secret (requires live credentials)
+##############################################################################
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+statement ok
+CREATE OR REPLACE SECRET live_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+statement ok
+ATTACH '' AS kbc2 (TYPE keboola, SECRET live_secret);
+
+query T
+SELECT COUNT(*) >= 1 FROM duckdb_databases() WHERE database_name = 'kbc2';
+----
+true
+
+statement ok
+DETACH kbc2;
+
+##############################################################################
+# 8. ATTACH with READ_ONLY (requires live credentials)
+##############################################################################
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+statement ok
+ATTACH '${KEBOOLA_URL}' AS kbc_ro (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    READ_ONLY
+);
+
+# READ_ONLY database must reject writes
+statement error
+INSERT INTO kbc_ro."in.c-crm".contacts VALUES ('x', 'y', 'z');
+
+statement ok
+DETACH kbc_ro;
+
+##############################################################################
+# 9. Duplicate database name must fail
+##############################################################################
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+statement ok
+ATTACH '${KEBOOLA_URL}' AS kbc_dup (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}'
+);
+
+statement error
+ATTACH '${KEBOOLA_URL}' AS kbc_dup (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}'
+);
+
+statement ok
+DETACH kbc_dup;
+
+##############################################################################
+# 10. Wrong stack URL (live network — expects connection/DNS error)
+##############################################################################
+
+require-env KEBOOLA_TOKEN
+
+statement error
+ATTACH 'https://this-host-does-not-exist.keboola.invalid' AS kbc_wrong_url (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}'
+);

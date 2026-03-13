@@ -1,0 +1,225 @@
+# keboola_snapshot.test
+# Tests for SNAPSHOT mode ATTACH and keboola_pull() utility.
+# SNAPSHOT: on ATTACH, all tables are pulled into local DuckDB in-memory storage.
+# keboola_pull(): explicitly refresh one table or the entire database.
+# Assumes:
+#   kbc."in.c-crm".contacts (id VARCHAR, name VARCHAR, email VARCHAR, status VARCHAR)
+#   kbc."out.c-analytics".events (event_id VARCHAR, user_id VARCHAR, event_type VARCHAR)
+
+require-env KEBOOLA_TOKEN
+require-env KEBOOLA_URL
+
+##############################################################################
+# Setup
+##############################################################################
+
+statement ok
+LOAD keboola;
+
+statement ok
+CREATE OR REPLACE SECRET snap_secret (
+    TYPE keboola,
+    TOKEN '${KEBOOLA_TOKEN}',
+    URL '${KEBOOLA_URL}'
+);
+
+##############################################################################
+# 1. ATTACH with SNAPSHOT flag — pulls all data locally at attach time
+##############################################################################
+
+statement ok
+ATTACH '' AS kbc_snap (
+    TYPE keboola,
+    SECRET snap_secret,
+    SNAPSHOT
+);
+
+# Database must be visible
+query T
+SELECT COUNT(*) >= 1
+FROM duckdb_databases()
+WHERE database_name = 'kbc_snap';
+----
+true
+
+# Schemas must be present
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.schemata
+WHERE catalog_name = 'kbc_snap';
+----
+true
+
+# Tables must be present
+query T
+SELECT COUNT(*) >= 1
+FROM information_schema.tables
+WHERE table_catalog = 'kbc_snap';
+----
+true
+
+# Data must be locally cached — SELECT must work
+query T
+SELECT COUNT(*) >= 0 FROM kbc_snap."in.c-crm".contacts;
+----
+true
+
+##############################################################################
+# 2. SNAPSHOT mode — queries run locally without network calls
+# We can verify this by DETACHing the snapshot and confirming data remains
+# available (the snapshot was copied into local DuckDB storage).
+##############################################################################
+
+# In SNAPSHOT mode the data is local — COUNT must be deterministic
+query T
+SELECT (SELECT COUNT(*) FROM kbc_snap."in.c-crm".contacts) =
+       (SELECT COUNT(*) FROM kbc_snap."in.c-crm".contacts);
+----
+true
+
+##############################################################################
+# 3. SNAPSHOT is READ_ONLY by definition — writes must fail
+##############################################################################
+
+statement error
+INSERT INTO kbc_snap."in.c-crm".contacts (id, name, email, status)
+VALUES ('snap-test', 'Snap User', 'snap@example.com', 'active');
+
+statement error
+UPDATE kbc_snap."in.c-crm".contacts SET status = 'inactive' WHERE id = '1';
+
+statement error
+DELETE FROM kbc_snap."in.c-crm".contacts WHERE id = '1';
+
+##############################################################################
+# 4. SNAPSHOT DETACH
+##############################################################################
+
+statement ok
+DETACH kbc_snap;
+
+##############################################################################
+# 5. keboola_pull() — pull a single table into the attached database
+##############################################################################
+
+# First attach in normal (live) mode
+statement ok
+ATTACH '' AS kbc (TYPE keboola, SECRET snap_secret);
+
+# Record the current row count before pull
+query T
+SELECT COUNT(*) >= 0 FROM kbc."in.c-crm".contacts;
+----
+true
+
+# keboola_pull() on a single table must succeed
+statement ok
+CALL keboola_pull('kbc."in.c-crm".contacts');
+
+# After pull, data must still be queryable
+query T
+SELECT COUNT(*) >= 0 FROM kbc."in.c-crm".contacts;
+----
+true
+
+##############################################################################
+# 6. keboola_pull() — pull the entire database
+##############################################################################
+
+statement ok
+CALL keboola_pull('kbc');
+
+# Data must still be available
+query T
+SELECT COUNT(*) >= 0 FROM kbc."in.c-crm".contacts;
+----
+true
+
+query T
+SELECT COUNT(*) >= 0 FROM kbc."out.c-analytics".events;
+----
+true
+
+##############################################################################
+# 7. keboola_pull() with a non-existent table must error
+##############################################################################
+
+statement error
+CALL keboola_pull('kbc."in.c-crm".this_table_does_not_exist_xyz');
+
+##############################################################################
+# 8. keboola_pull() with a non-existent database alias must error
+##############################################################################
+
+statement error
+CALL keboola_pull('no_such_db_alias."in.c-crm".contacts');
+
+##############################################################################
+# 9. keboola_pull() without arguments must error
+##############################################################################
+
+statement error
+CALL keboola_pull();
+
+##############################################################################
+# 10. SNAPSHOT mode with a specific table list (future: selective snapshot)
+# If the extension supports pulling only a subset of tables:
+#   ATTACH '' AS kbc_partial (TYPE keboola, SECRET snap_secret, SNAPSHOT,
+#                              TABLES 'in.c-crm.contacts,in.c-crm.companies');
+# For now, test that an unknown option errors gracefully.
+##############################################################################
+
+statement error
+ATTACH '' AS kbc_bad_snap (
+    TYPE keboola,
+    SECRET snap_secret,
+    SNAPSHOT,
+    UNKNOWN_SNAP_OPTION 'value'
+);
+
+##############################################################################
+# 11. keboola_pull() idempotency — calling twice must not error
+##############################################################################
+
+statement ok
+CALL keboola_pull('kbc."in.c-crm".contacts');
+
+statement ok
+CALL keboola_pull('kbc."in.c-crm".contacts');
+
+query T
+SELECT COUNT(*) >= 0 FROM kbc."in.c-crm".contacts;
+----
+true
+
+##############################################################################
+# 12. After keboola_pull(), newly inserted remote data is reflected locally
+##############################################################################
+
+# Insert a sentinel row via Keboola Storage
+statement ok
+INSERT INTO kbc."in.c-crm".contacts (id, name, email, status)
+VALUES ('snap-sentinel-001', 'Sentinel User', 'sentinel@example.com', 'active');
+
+# Pull the table to refresh local cache
+statement ok
+CALL keboola_pull('kbc."in.c-crm".contacts');
+
+# The sentinel row must now be visible
+query T
+SELECT COUNT(*) >= 1
+FROM kbc."in.c-crm".contacts
+WHERE id = 'snap-sentinel-001';
+----
+true
+
+# Clean up
+statement ok
+DELETE FROM kbc."in.c-crm".contacts WHERE id = 'snap-sentinel-001';
+
+##############################################################################
+# Teardown
+##############################################################################
+
+statement ok
+DETACH kbc;

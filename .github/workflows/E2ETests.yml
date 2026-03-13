@@ -1,0 +1,94 @@
+name: E2E Tests (Live)
+
+# These tests call the real Keboola Storage API.
+# They only run on explicit manual dispatch or on a weekly schedule
+# to avoid consuming live API credits on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keboola_url:
+        description: "Keboola stack URL (leave blank to use the KEBOOLA_URL secret)"
+        required: false
+        default: ""
+
+  schedule:
+    # Every Sunday at 03:00 UTC
+    - cron: "0 3 * * 0"
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: E2E live tests
+    runs-on: ubuntu-latest
+
+    env:
+      KEBOOLA_TOKEN: ${{ secrets.KEBOOLA_TOKEN }}
+      KEBOOLA_URL: ${{ inputs.keboola_url || secrets.KEBOOLA_URL || 'https://connection.keboola.com' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # -----------------------------------------------------------------------
+      # Build the extension
+      # -----------------------------------------------------------------------
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build \
+            libssl-dev pkg-config unzip curl
+
+      - name: Build release extension
+        run: make release
+
+      # -----------------------------------------------------------------------
+      # Set up Python environment with uv
+      # -----------------------------------------------------------------------
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install Python test dependencies
+        run: uv sync --extra test
+        working-directory: test/e2e
+
+      # -----------------------------------------------------------------------
+      # Run E2E tests
+      # -----------------------------------------------------------------------
+      - name: Check KEBOOLA_TOKEN is set
+        run: |
+          if [ -z "${KEBOOLA_TOKEN}" ]; then
+            echo "ERROR: KEBOOLA_TOKEN secret is not set. Add it in Settings → Secrets → Actions."
+            exit 1
+          fi
+
+      - name: Run E2E pytest suite
+        run: |
+          uv run pytest test/e2e/ \
+            -m live \
+            --timeout=120 \
+            -v \
+            --tb=short \
+            --junitxml=test-results/e2e.xml
+        env:
+          KEBOOLA_TOKEN: ${{ env.KEBOOLA_TOKEN }}
+          KEBOOLA_URL: ${{ env.KEBOOLA_URL }}
+          DUCKDB_EXT_PATH: ${{ github.workspace }}/build/release/extension/keboola/keboola.duckdb_extension
+
+      # -----------------------------------------------------------------------
+      # Upload results
+      # -----------------------------------------------------------------------
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-results
+          path: test-results/
+          retention-days: 14
