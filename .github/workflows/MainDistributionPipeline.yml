@@ -21,6 +21,7 @@ jobs:
       ci_tools_version: v1.5.0
       extension_name: keboola
       enable_rust: false
+      exclude_community_exclude_platforms: true
 
   # ---------------------------------------------------------------------------
   # Build against DuckDB main (nightly)
@@ -33,6 +34,7 @@ jobs:
       ci_tools_version: main
       extension_name: keboola
       enable_rust: false
+      exclude_community_exclude_platforms: true
 
   # ---------------------------------------------------------------------------
   # Offline SQL logic tests — no credentials required

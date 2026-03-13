@@ -224,7 +224,14 @@ static bool TryExtractColumnName(const Expression &expr,
     if (expr.expression_class == ExpressionClass::BOUND_COLUMN_REF) {
         const auto &cref = expr.Cast<BoundColumnRefExpression>();
         // column_index is the index within the output of the LogicalGet
-        idx_t col_idx = static_cast<idx_t>(cref.binding.column_index);
+        // In DuckDB v1.5.0, column_index is idx_t; in DuckDB main it is ProjectionIndex.
+        // Use if constexpr to handle both without version macros.
+        idx_t col_idx;
+        if constexpr (std::is_integral_v<decltype(cref.binding.column_index)>) {
+            col_idx = static_cast<idx_t>(cref.binding.column_index);
+        } else {
+            col_idx = static_cast<idx_t>(cref.binding.column_index.index);
+        }
         // LogicalGet::names holds the projected column names
         if (col_idx < get.names.size()) {
             out_col_name = get.names[col_idx];
