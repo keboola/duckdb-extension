@@ -52,7 +52,7 @@ private:
     std::string branch_id_;
     std::string workspace_id_;
 
-    static constexpr int PAGE_SIZE = 1000;
+    static constexpr int QUERY_PAGE_SIZE = 1000;
     static constexpr int POLL_INITIAL_MS = 100;
     static constexpr double POLL_BACKOFF = 1.5;
     static constexpr int POLL_MAX_MS = 2000;

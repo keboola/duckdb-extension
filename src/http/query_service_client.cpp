@@ -195,7 +195,7 @@ QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id) {
     while (true) {
         std::string path = "/api/v1/queries/" + job_id + "/results"
                            "?offset=" + std::to_string(offset) +
-                           "&limit=" + std::to_string(PAGE_SIZE);
+                           "&limit=" + std::to_string(QUERY_PAGE_SIZE);
 
         std::string resp;
         try {
@@ -288,7 +288,7 @@ QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id) {
             }
         } else {
             // No totalRowCount — stop when we got less than a full page
-            if (page_row_count < PAGE_SIZE) {
+            if (page_row_count < QUERY_PAGE_SIZE) {
                 break;
             }
         }

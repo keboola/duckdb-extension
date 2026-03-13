@@ -33,6 +33,8 @@ jobs:
       ci_tools_version: main
       extension_name: keboola
       enable_rust: false
+    # DuckDB main is a moving target — allowed to fail without blocking release
+    continue-on-error: true
 
   # ---------------------------------------------------------------------------
   # Offline SQL logic tests — no credentials required
@@ -160,7 +162,7 @@ jobs:
       - duckdb-stable-build
       - duckdb-next-build
       - e2e-gate
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && needs.duckdb-stable-build.result == 'success' && needs.e2e-gate.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -177,6 +179,8 @@ jobs:
 
       - name: Download all next build artifacts
         uses: actions/download-artifact@v4
+        continue-on-error: true
+        if: needs.duckdb-next-build.result == 'success'
         with:
           pattern: "*-main"
           path: artifacts/next/
@@ -221,4 +225,3 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/stable/**/*.duckdb_extension
-            artifacts/next/**/*.duckdb_extension
