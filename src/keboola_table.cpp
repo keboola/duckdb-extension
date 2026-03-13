@@ -5,7 +5,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
-#include "duckdb/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 

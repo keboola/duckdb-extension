@@ -46,11 +46,11 @@ public:
     //! Constructor for INSERT INTO.
     KeboolaInsert(LogicalOperator &op,
                   TableCatalogEntry &table,
-                  physical_index_t row_id_index);
+                  PhysicalIndex row_id_index);
 
     //! The target table entry (holds column metadata and connection).
     TableCatalogEntry &table_;
-    physical_index_t row_id_index_;
+    PhysicalIndex row_id_index_;
 
 public:
     // -----------------------------------------------------------------------

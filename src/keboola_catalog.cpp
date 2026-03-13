@@ -7,9 +7,11 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
+#include "duckdb/common/enums/on_entry_not_found.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/constants.hpp"
 #include "duckdb/storage/database_size.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -156,7 +158,7 @@ void KeboolaCatalog::DropSchema(ClientContext & /*context*/, DropInfo &info) {
 
     auto it = schemas_.find(schema_name);
     if (it == schemas_.end()) {
-        if (info.if_exists) {
+        if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
             return; // IF EXISTS — silent
         }
         throw CatalogException("Schema with name \"%s\" not found in Keboola catalog",
@@ -187,7 +189,7 @@ PhysicalOperator &KeboolaCatalog::PlanInsert(ClientContext & /*context*/,
                                               optional_ptr<PhysicalOperator> plan) {
     D_ASSERT(plan);
 
-    auto &insert = planner.Make<KeboolaInsert>(op, *op.table, op.row_id_index);
+    auto &insert = planner.Make<KeboolaInsert>(op, op.table, PhysicalIndex(DConstants::INVALID_INDEX));
     insert.children.push_back(*plan);
     return insert;
 }
@@ -388,7 +390,7 @@ PhysicalOperator &KeboolaCatalog::PlanDelete(ClientContext & /*context*/,
         params.allow_truncate = true;
     }
 
-    auto &del = planner.Make<KeboolaDelete>(op, *op.table, std::move(params));
+    auto &del = planner.Make<KeboolaDelete>(op, op.table, std::move(params));
     del.children.push_back(plan);
     return del;
 }
@@ -397,9 +399,9 @@ PhysicalOperator &KeboolaCatalog::PlanUpdate(ClientContext & /*context*/,
                                               PhysicalPlanGenerator &planner,
                                               LogicalUpdate &op,
                                               PhysicalOperator &plan) {
-    auto &update = planner.Make<KeboolaUpdate>(op, *op.table,
+    auto &update = planner.Make<KeboolaUpdate>(op, op.table,
                                                op.columns,
-                                               std::move(op.expressions));
+                                               std::move(op.bound_defaults));
     update.children.push_back(plan);
     return update;
 }

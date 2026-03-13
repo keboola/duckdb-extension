@@ -65,7 +65,10 @@ void RegisterKeboolaSecret(DatabaseInstance &db) {
     config.secret_manager->RegisterSecretType(secret_type);
 
     // 2. Register the CREATE SECRET handler
-    CreateSecretFunction secret_fun("keboola", "config", CreateKeboolaSecret);
+    CreateSecretFunction secret_fun;
+    secret_fun.secret_type = "keboola";
+    secret_fun.provider    = "config";
+    secret_fun.function    = CreateKeboolaSecret;
     secret_fun.named_parameters["token"]  = LogicalType::VARCHAR;
     secret_fun.named_parameters["url"]    = LogicalType::VARCHAR;
     secret_fun.named_parameters["branch"] = LogicalType::VARCHAR;

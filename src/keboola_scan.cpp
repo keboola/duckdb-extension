@@ -126,7 +126,7 @@ static Value StringToValue(const string &str, const LogicalType &type) {
             catch (...) { return Value(type); }
 
         case LogicalTypeId::TIMESTAMP_TZ:
-            try { return Value::TIMESTAMPTZ(Timestamp::FromString(str)); }
+            try { return Value::TIMESTAMPTZ(timestamp_tz_t(Timestamp::FromString(str))); }
             catch (...) { return Value(type); }
 
         case LogicalTypeId::TIME:
@@ -207,10 +207,18 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
 
     if (bind.is_snapshot && bind.snapshot_rows != nullptr) {
         // Snapshot mode: use pre-fetched rows — no Query Service call
-        gstate->rows      = *bind.snapshot_rows;
-        gstate->null_mask = (bind.snapshot_null_mask != nullptr)
-                                ? *bind.snapshot_null_mask
-                                : std::vector<std::vector<bool>>{};
+        const auto &src_rows = *bind.snapshot_rows;
+        gstate->rows.resize(src_rows.size());
+        for (idx_t i = 0; i < src_rows.size(); i++) {
+            gstate->rows[i].assign(src_rows[i].begin(), src_rows[i].end());
+        }
+        if (bind.snapshot_null_mask != nullptr) {
+            const auto &src_mask = *bind.snapshot_null_mask;
+            gstate->null_mask.resize(src_mask.size());
+            for (idx_t i = 0; i < src_mask.size(); i++) {
+                gstate->null_mask[i].assign(src_mask[i].begin(), src_mask[i].end());
+            }
+        }
     } else {
         // Live mode: query via the Query Service
         // Get pushed-down filters
@@ -233,8 +241,14 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
 
         try {
             auto result = qsc.ExecuteQuery(sql);
-            gstate->rows      = std::move(result.rows);
-            gstate->null_mask = std::move(result.null_mask);
+            gstate->rows.resize(result.rows.size());
+            for (idx_t i = 0; i < result.rows.size(); i++) {
+                gstate->rows[i].assign(result.rows[i].begin(), result.rows[i].end());
+            }
+            gstate->null_mask.resize(result.null_mask.size());
+            for (idx_t i = 0; i < result.null_mask.size(); i++) {
+                gstate->null_mask[i].assign(result.null_mask[i].begin(), result.null_mask[i].end());
+            }
         } catch (const std::exception &e) {
             throw IOException("Keboola scan failed for table '%s': %s",
                               bind.table_info.id, std::string(e.what()));

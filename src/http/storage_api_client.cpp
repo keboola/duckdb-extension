@@ -31,7 +31,16 @@ struct YyjsonDoc {
             yyjson_doc_free(doc);
         }
     }
-    // non-copyable
+    // movable, non-copyable
+    YyjsonDoc(YyjsonDoc &&other) noexcept : doc(other.doc) { other.doc = nullptr; }
+    YyjsonDoc &operator=(YyjsonDoc &&other) noexcept {
+        if (this != &other) {
+            if (doc) yyjson_doc_free(doc);
+            doc = other.doc;
+            other.doc = nullptr;
+        }
+        return *this;
+    }
     YyjsonDoc(const YyjsonDoc &) = delete;
     YyjsonDoc &operator=(const YyjsonDoc &) = delete;
 
@@ -82,7 +91,7 @@ StorageApiClient::StorageApiClient(const std::string &url, const std::string &to
 KeboolaServiceUrls StorageApiClient::VerifyAndDiscover() {
     std::string body;
     try {
-        body = http_.Get("/v2/storage/?include=services");
+        body = http_.Get("/v2/storage");
     } catch (const std::exception &e) {
         std::string msg(e.what());
         if (msg.find("authentication failed") != std::string::npos ||

@@ -5,9 +5,15 @@
 #include <thread>
 #include <chrono>
 
-// cpp-httplib — installed via vcpkg, header-only.
+// cpp-httplib — bundled with DuckDB in third_party/httplib/httplib.hpp
 // CPPHTTPLIB_OPENSSL_SUPPORT is defined in CMakeLists.txt to enable HTTPS.
-#include "httplib.h"
+// The bundled version uses a renamed namespace to avoid symbol conflicts.
+#include "httplib.hpp"
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+namespace httplib = duckdb_httplib_openssl; // NOLINT
+#else
+namespace httplib = duckdb_httplib; // NOLINT
+#endif
 
 namespace duckdb {
 

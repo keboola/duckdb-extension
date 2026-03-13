@@ -24,6 +24,16 @@ struct QSYyjsonDoc {
             yyjson_doc_free(doc);
         }
     }
+    // movable, non-copyable
+    QSYyjsonDoc(QSYyjsonDoc &&other) noexcept : doc(other.doc) { other.doc = nullptr; }
+    QSYyjsonDoc &operator=(QSYyjsonDoc &&other) noexcept {
+        if (this != &other) {
+            if (doc) yyjson_doc_free(doc);
+            doc = other.doc;
+            other.doc = nullptr;
+        }
+        return *this;
+    }
     QSYyjsonDoc(const QSYyjsonDoc &) = delete;
     QSYyjsonDoc &operator=(const QSYyjsonDoc &) = delete;
     bool ok() const { return doc != nullptr; }

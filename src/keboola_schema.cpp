@@ -17,6 +17,7 @@
 #include "duckdb/parser/parsed_data/create_collation_info.hpp"
 #include "duckdb/parser/parsed_data/create_type_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
+#include "duckdb/common/enums/on_entry_not_found.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/common/types.hpp"
@@ -191,7 +192,7 @@ optional_ptr<CatalogEntry> KeboolaSchemaEntry::CreateTable(
     bucket_.tables.push_back(table_info);
 
     // Build and store catalog entry
-    auto &catalog = GetCatalog();
+    auto &catalog = ParentCatalog();
     auto entry = MakeTableEntry(catalog, table_info);
     auto *ptr = entry.get();
     tables_[lower_name] = std::move(entry);
@@ -209,7 +210,7 @@ void KeboolaSchemaEntry::DropEntry(ClientContext & /*context*/, DropInfo &info) 
         auto it = tables_.find(lower_name);
 
         if (it == tables_.end()) {
-            if (info.if_exists) {
+            if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
                 return; // IF EXISTS — silently do nothing
             }
             throw CatalogException("Table with name \"%s\" not found in schema \"%s\"",

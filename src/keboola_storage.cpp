@@ -12,6 +12,7 @@
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/enums/access_mode.hpp"
 
 namespace duckdb {
 
@@ -53,12 +54,12 @@ static void ReadFromSecret(ClientContext &context,
 // KeboolaAttach — called by DuckDB when ATTACH TYPE keboola is executed
 // ---------------------------------------------------------------------------
 
-static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*storage_info*/,
+static unique_ptr<Catalog> KeboolaAttach(StorageExtensionInfo * /*storage_info*/,
                                           ClientContext &context,
                                           AttachedDatabase &db,
                                           const string &name,
                                           AttachInfo &info,
-                                          AttachOptions & /*options*/) {
+                                          AccessMode /*access_mode*/) {
     // Verify external access is permitted
     auto &config = DBConfig::GetConfig(context);
     if (!config.options.enable_external_access) {
@@ -197,7 +198,7 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
 // ---------------------------------------------------------------------------
 
 static unique_ptr<TransactionManager> KeboolaCreateTransactionManager(
-    optional_ptr<StorageExtensionInfo> /*storage_info*/,
+    StorageExtensionInfo * /*storage_info*/,
     AttachedDatabase &db,
     Catalog &catalog) {
 

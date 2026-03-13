@@ -3,7 +3,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
-#include "duckdb/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "keboola_connection.hpp"
 #include "http/storage_api_client.hpp"

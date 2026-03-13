@@ -1,7 +1,12 @@
 #include "http/importer_client.hpp"
 
-// cpp-httplib — header-only, installed via vcpkg
-#include "httplib.h"
+// cpp-httplib — bundled with DuckDB in third_party/httplib/httplib.hpp
+#include "httplib.hpp"
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+namespace httplib = duckdb_httplib_openssl; // NOLINT
+#else
+namespace httplib = duckdb_httplib; // NOLINT
+#endif
 
 #include "duckdb/common/exception.hpp"
 

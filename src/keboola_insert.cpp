@@ -23,7 +23,7 @@ namespace duckdb {
 
 KeboolaInsert::KeboolaInsert(LogicalOperator &op,
                               TableCatalogEntry &table,
-                              physical_index_t row_id_index)
+                              PhysicalIndex row_id_index)
     : PhysicalOperator(PhysicalOperatorType::EXTENSION,
                        op.types,
                        op.estimated_cardinality),
