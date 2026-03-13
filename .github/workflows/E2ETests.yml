@@ -1,10 +1,17 @@
 name: E2E Tests (Live)
 
 # These tests call the real Keboola Storage API.
-# They only run on explicit manual dispatch or on a weekly schedule
-# to avoid consuming live API credits on every push.
+# Triggers:
+#   - Every push to main (smoke test after merge)
+#   - Manual dispatch (ad-hoc testing)
+#   - Weekly schedule (full regression)
+# On tag pushes, E2E tests run via the release gate in MainDistributionPipeline.yml.
 
 on:
+  push:
+    branches:
+      - main
+
   workflow_dispatch:
     inputs:
       keboola_url:
