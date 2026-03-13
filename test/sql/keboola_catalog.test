@@ -3,6 +3,7 @@
 # Requires a live Keboola connection with at least one bucket and table present.
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 ##############################################################################

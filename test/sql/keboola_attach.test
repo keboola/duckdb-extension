@@ -137,6 +137,7 @@ ATTACH '${KEBOOLA_URL}' AS kbc_invalid (
 ##############################################################################
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 # Attach using inline credentials — URL is the path argument
@@ -173,6 +174,7 @@ SELECT COUNT(*) FROM duckdb_databases() WHERE database_name = 'kbc';
 ##############################################################################
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 statement ok
@@ -198,6 +200,7 @@ DETACH kbc2;
 ##############################################################################
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 statement ok
@@ -219,6 +222,7 @@ DETACH kbc_ro;
 ##############################################################################
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 statement ok

@@ -7,6 +7,7 @@
 #   kbc."out.c-analytics".events (event_id VARCHAR, user_id VARCHAR, event_type VARCHAR)
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 ##############################################################################

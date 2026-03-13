@@ -26,15 +26,17 @@ static unique_ptr<BaseSecret> CreateKeboolaSecret(ClientContext & /*context*/,
 
     // TOKEN (required, sensitive)
     auto token_it = input.options.find("token");
-    if (token_it != input.options.end()) {
-        secret->secret_map["token"] = token_it->second;
+    if (token_it == input.options.end()) {
+        throw InvalidInputException("Keboola secret requires TOKEN");
     }
+    secret->secret_map["token"] = token_it->second;
 
     // URL (required)
     auto url_it = input.options.find("url");
-    if (url_it != input.options.end()) {
-        secret->secret_map["url"] = url_it->second;
+    if (url_it == input.options.end()) {
+        throw InvalidInputException("Keboola secret requires URL");
     }
+    secret->secret_map["url"] = url_it->second;
 
     // BRANCH (optional)
     auto branch_it = input.options.find("branch");

@@ -105,6 +105,7 @@ ATTACH '' AS kbc_err_no_secret (
 ##############################################################################
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 statement ok
@@ -241,6 +242,7 @@ DETACH kbc_that_was_never_attached;
 # crashing or silently doing nothing.
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 statement ok

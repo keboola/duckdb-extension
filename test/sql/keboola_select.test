@@ -8,6 +8,7 @@
 # with at least 5 rows in contacts and 1000+ rows in events (for pagination test).
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 ##############################################################################

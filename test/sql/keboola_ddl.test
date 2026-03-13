@@ -4,6 +4,7 @@
 # Uses unique names with 'test_ddl_' prefix to avoid collisions.
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 ##############################################################################

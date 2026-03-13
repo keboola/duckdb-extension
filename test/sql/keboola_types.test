@@ -14,6 +14,7 @@
 # This test file also covers untyped (all-VARCHAR) tables and edge values.
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 ##############################################################################

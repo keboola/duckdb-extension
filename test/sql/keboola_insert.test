@@ -8,6 +8,7 @@
 # (e.g. 'test-ins-') is used to avoid collisions with other data.
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 ##############################################################################

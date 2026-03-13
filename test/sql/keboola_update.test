@@ -7,6 +7,7 @@
 # All test rows use the 'test-upd-' id prefix.
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 ##############################################################################

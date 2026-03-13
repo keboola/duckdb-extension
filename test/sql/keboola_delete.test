@@ -6,6 +6,7 @@
 # All test rows use the 'test-del-' id prefix.
 
 require-env KEBOOLA_TOKEN
+
 require-env KEBOOLA_URL
 
 ##############################################################################
