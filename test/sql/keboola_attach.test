@@ -65,6 +65,8 @@ CREATE SECRET kbc_no_token (
     TYPE keboola,
     URL 'https://connection.keboola.com'
 );
+----
+Keboola secret requires TOKEN
 
 # Missing URL must fail
 statement error
@@ -72,6 +74,8 @@ CREATE SECRET kbc_no_url (
     TYPE keboola,
     TOKEN 'sapi-token-xxx'
 );
+----
+Keboola secret requires URL
 
 # Unknown option must fail
 statement error
@@ -81,6 +85,8 @@ CREATE SECRET kbc_unknown_opt (
     URL 'https://connection.keboola.com',
     UNKNOWN_OPTION 'value'
 );
+----
+<REGEX>:.*
 
 ##############################################################################
 # 4. ATTACH syntax variants — offline / parse-level checks
@@ -95,6 +101,8 @@ ATTACH 'https://connection.keboola.com' AS kbc_parse_check (
     TYPE keboola,
     TOKEN 'bad-token'
 );
+----
+<REGEX>:.*
 
 # ATTACH with a non-existent secret name must produce a descriptive error
 statement error
@@ -102,6 +110,8 @@ ATTACH '' AS kbc_bad_secret (
     TYPE keboola,
     SECRET no_such_secret_xyz
 );
+----
+<REGEX>:.*
 
 # ATTACH with READ_ONLY flag — parse check
 statement error
@@ -110,6 +120,8 @@ ATTACH 'https://connection.keboola.com' AS kbc_ro_parse (
     TOKEN 'bad-token',
     READ_ONLY
 );
+----
+<REGEX>:.*
 
 # ATTACH with SNAPSHOT flag — parse check
 statement error
@@ -118,6 +130,8 @@ ATTACH 'https://connection.keboola.com' AS kbc_snap_parse (
     TOKEN 'bad-token',
     SNAPSHOT
 );
+----
+<REGEX>:.*
 
 ##############################################################################
 # 5. ATTACH with invalid credentials (live network, expected auth error)
@@ -131,6 +145,8 @@ ATTACH '${KEBOOLA_URL}' AS kbc_invalid (
     TYPE keboola,
     TOKEN 'this-token-is-definitely-invalid-000'
 );
+----
+<REGEX>:.*
 
 ##############################################################################
 # 6. Successful ATTACH and DETACH (requires live credentials)
@@ -213,6 +229,8 @@ ATTACH '${KEBOOLA_URL}' AS kbc_ro (
 # READ_ONLY database must reject writes
 statement error
 INSERT INTO kbc_ro."in.c-crm".contacts VALUES ('x', 'y', 'z');
+----
+<REGEX>:.*
 
 statement ok
 DETACH kbc_ro;
@@ -236,6 +254,8 @@ ATTACH '${KEBOOLA_URL}' AS kbc_dup (
     TYPE keboola,
     TOKEN '${KEBOOLA_TOKEN}'
 );
+----
+<REGEX>:.*
 
 statement ok
 DETACH kbc_dup;
@@ -251,3 +271,5 @@ ATTACH 'https://this-host-does-not-exist.keboola.invalid' AS kbc_wrong_url (
     TYPE keboola,
     TOKEN '${KEBOOLA_TOKEN}'
 );
+----
+<REGEX>:.*
