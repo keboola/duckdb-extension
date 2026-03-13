@@ -12,9 +12,6 @@ include_directories(src)
 # cpp-httplib — use the copy bundled with DuckDB (no vcpkg needed)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib)
 
-# Enable HTTPS support in cpp-httplib (requires OpenSSL, which DuckDB links anyway)
-add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
-
 set(EXTENSION_SOURCES
     src/keboola_extension.cpp
     src/keboola_secret.cpp
@@ -42,10 +39,15 @@ set(EXTENSION_SOURCES
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-# Link OpenSSL for HTTPS support in cpp-httplib
-find_package(OpenSSL REQUIRED)
-target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
+# Link OpenSSL for HTTPS support in cpp-httplib (not available on WASM)
+if(NOT EMSCRIPTEN)
+    find_package(OpenSSL)
+    if(OpenSSL_FOUND OR OPENSSL_FOUND)
+        add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
+        target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
+        target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+endif()
 
 # Installation — required by the DuckDB extension distribution pipeline.
 install(
