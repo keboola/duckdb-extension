@@ -173,13 +173,10 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
 
     auto catalog = make_uniq<KeboolaCatalog>(db, std::move(conn), std::move(buckets));
 
-    // If SNAPSHOT mode was requested, pull all tables into local storage now
+    // If SNAPSHOT mode was requested, mark the connection so each table is lazily
+    // pulled into local storage on first scan (instead of eagerly pulling all tables).
     if (snapshot_mode) {
-        try {
-            catalog->PullAllTables(context);
-        } catch (const std::exception &e) {
-            throw IOException("Keboola ATTACH SNAPSHOT failed: %s", std::string(e.what()));
-        }
+        catalog->GetConnection()->snapshot_mode = true;
     }
 
     return catalog;

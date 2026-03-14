@@ -27,6 +27,10 @@ struct KeboolaScanBindData : public FunctionData {
     //! Indices of columns to fetch (projection pushdown). May be empty = all columns.
     vector<column_t> column_ids;
 
+    //! Pointer to the owning table entry — needed so get_bind_info can expose
+    //! the TableCatalogEntry to DuckDB's DELETE/UPDATE binder.
+    optional_ptr<TableCatalogEntry> table_entry;
+
     // Phase 6: snapshot support — pre-fetched rows bypass the Query Service
     bool is_snapshot = false;
     //! Pointer to the table entry's snapshot rows (not owned — entry outlives scan)
@@ -47,8 +51,10 @@ struct KeboolaScanGlobalState : public GlobalTableFunctionState {
     vector<vector<string>> rows;
     //! Null mask: null_mask[row][col] == true means the cell is NULL.
     vector<vector<bool>> null_mask;
-    //! DuckDB types for each column in the result (in result order).
+    //! DuckDB types for each projected data column (parallel to rows[][]).
     vector<LogicalType> column_types;
+    //! Maps output column index → data column index, or -1 for COLUMN_IDENTIFIER_ROW_ID.
+    vector<int> data_col_map;
     //! Current read position (atomic for thread safety even with MaxThreads=1).
     std::atomic<idx_t> position;
     //! Whether the scan is finished.

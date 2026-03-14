@@ -21,6 +21,13 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/conjunction_filter.hpp"
+#include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/execution/operator/filter/physical_filter.hpp"
 
 namespace duckdb {
 
@@ -79,17 +86,16 @@ optional_ptr<SchemaCatalogEntry> KeboolaCatalog::LookupSchema(
         return it->second.get();
     }
 
-    // If catalog is stale, try refreshing once before giving up
-    if (IsCatalogStale()) {
-        try {
-            RefreshCatalog();
-        } catch (...) {
-            // Refresh failure is non-fatal; fall through to not-found handling
-        }
-        auto it2 = schemas_.find(schema_name);
-        if (it2 != schemas_.end()) {
-            return it2->second.get();
-        }
+    // Schema not found: always try a refresh once before giving up.
+    // Handles buckets created after ATTACH (e.g. concurrent sessions or test fixtures).
+    try {
+        RefreshCatalog();
+    } catch (...) {
+        // Refresh failure is non-fatal; fall through to not-found handling
+    }
+    auto it2 = schemas_.find(schema_name);
+    if (it2 != schemas_.end()) {
+        return it2->second.get();
     }
 
     if (if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
@@ -256,6 +262,159 @@ static bool TryExtractColumnName(const Expression &expr,
     return false;
 }
 
+//! Try to resolve the column name from an expression using a scan's column_ids + names.
+//!
+//! Handles two expression forms:
+//!  - BoundColumnRefExpression: binding.column_index is the schema-absolute column index.
+//!    Looks it up directly in names[].
+//!  - BoundReferenceExpression: index is the DataChunk projected column position.
+//!    Maps dc_index → column_ids[dc_index].GetPrimaryIndex() → names[schema_index].
+//!
+//! Used for PhysicalFilter expressions, which DuckDB converts from BoundColumnRef to
+//! BoundReference during physical plan generation (column binding resolution).
+static bool TryExtractColumnNameFromScan(const Expression &expr,
+                                          const vector<string> &names,
+                                          const vector<ColumnIndex> &column_ids,
+                                          std::string &out_col_name) {
+    if (expr.expression_class == ExpressionClass::BOUND_COLUMN_REF) {
+        const auto &cref = expr.Cast<BoundColumnRefExpression>();
+        idx_t col_idx = GetColumnIdx(cref.binding.column_index);
+        if (col_idx < names.size()) {
+            out_col_name = names[col_idx];
+            return true;
+        }
+    }
+    if (expr.expression_class == ExpressionClass::BOUND_REF) {
+        // PhysicalFilter expressions use BoundReferenceExpression (DataChunk index).
+        // Map through column_ids to get the schema-absolute index, then names[].
+        const auto &bref = expr.Cast<BoundReferenceExpression>();
+        idx_t dc_idx = static_cast<idx_t>(bref.index);
+        if (dc_idx < column_ids.size()) {
+            idx_t schema_idx = column_ids[dc_idx].GetPrimaryIndex();
+            if (schema_idx < names.size()) {
+                out_col_name = names[schema_idx];
+                return true;
+            }
+        }
+    }
+    if (expr.expression_class == ExpressionClass::BOUND_CAST) {
+        const auto &cast = expr.Cast<BoundCastExpression>();
+        return TryExtractColumnNameFromScan(*cast.child, names, column_ids, out_col_name);
+    }
+    return false;
+}
+
+//! Parse a filter expression from a PhysicalFilter into KeboolaDeleteParams.
+//! Uses scan.names and scan.column_ids to resolve column references, since
+//! PhysicalFilter expressions use BoundReferenceExpression (DataChunk index).
+static KeboolaDeleteParams ParsePhysicalFilterExpression(const Expression &expr,
+                                                          const vector<string> &names,
+                                                          const vector<ColumnIndex> &column_ids) {
+    KeboolaDeleteParams params;
+
+    // Simple equality / inequality comparison: col = val or col != val
+    if (expr.expression_class == ExpressionClass::BOUND_COMPARISON) {
+        const auto &cmp = expr.Cast<BoundComparisonExpression>();
+        std::string col_name, val;
+        bool ok = (TryExtractColumnNameFromScan(*cmp.left, names, column_ids, col_name) &&
+                   TryExtractStringConstant(*cmp.right, val))
+               || (TryExtractStringConstant(*cmp.left, val) &&
+                   TryExtractColumnNameFromScan(*cmp.right, names, column_ids, col_name));
+        if (!ok) {
+            throw NotImplementedException(
+                "DELETE WHERE must compare a single column to a constant value "
+                "(Storage API limitation). Got: %s", expr.ToString());
+        }
+        params.where_column = col_name;
+        params.where_values  = {val};
+        switch (cmp.type) {
+            case ExpressionType::COMPARE_EQUAL:
+            case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+                params.where_operator = "eq"; break;
+            case ExpressionType::COMPARE_NOTEQUAL:
+            case ExpressionType::COMPARE_DISTINCT_FROM:
+                params.where_operator = "ne"; break;
+            default:
+                throw NotImplementedException(
+                    "DELETE WHERE only supports = and != comparisons "
+                    "(Storage API limitation). Got: %s", expr.ToString());
+        }
+        return params;
+    }
+
+    // IN expression: col IN (val1, val2, ...)
+    if (expr.expression_class == ExpressionClass::BOUND_OPERATOR) {
+        const auto &op_expr = expr.Cast<BoundOperatorExpression>();
+        if (op_expr.type == ExpressionType::COMPARE_IN && !op_expr.children.empty()) {
+            std::string col_name;
+            if (!TryExtractColumnNameFromScan(*op_expr.children[0], names, column_ids, col_name)) {
+                throw NotImplementedException(
+                    "DELETE WHERE IN: left side must be a column reference. Got: %s",
+                    expr.ToString());
+            }
+            params.where_column   = col_name;
+            params.where_operator = "eq";
+            for (idx_t i = 1; i < op_expr.children.size(); i++) {
+                std::string v;
+                if (!TryExtractStringConstant(*op_expr.children[i], v)) {
+                    throw NotImplementedException(
+                        "DELETE WHERE IN: all values must be constants. Got: %s",
+                        op_expr.children[i]->ToString());
+                }
+                params.where_values.push_back(std::move(v));
+            }
+            return params;
+        }
+    }
+
+    // OR conjunction: DuckDB rewrites `col IN ('a','b')` as `col = 'a' OR col = 'b'`
+    if (expr.expression_class == ExpressionClass::BOUND_CONJUNCTION) {
+        const auto &conj = expr.Cast<BoundConjunctionExpression>();
+        if (conj.type == ExpressionType::CONJUNCTION_OR) {
+            std::string col_name;
+            std::vector<std::string> vals;
+            for (const auto &child : conj.children) {
+                if (child->expression_class != ExpressionClass::BOUND_COMPARISON) {
+                    throw NotImplementedException(
+                        "DELETE WHERE IN: OR children must be simple comparisons. Got: %s",
+                        child->ToString());
+                }
+                const auto &cmp = child->Cast<BoundComparisonExpression>();
+                if (cmp.type != ExpressionType::COMPARE_EQUAL &&
+                    cmp.type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+                    throw NotImplementedException(
+                        "DELETE WHERE IN: OR children must be equality comparisons. Got: %s",
+                        child->ToString());
+                }
+                std::string c, v;
+                bool ok = (TryExtractColumnNameFromScan(*cmp.left, names, column_ids, c) &&
+                           TryExtractStringConstant(*cmp.right, v))
+                       || (TryExtractStringConstant(*cmp.left, v) &&
+                           TryExtractColumnNameFromScan(*cmp.right, names, column_ids, c));
+                if (!ok) {
+                    throw NotImplementedException(
+                        "DELETE WHERE IN: each OR branch must compare a column to a constant. Got: %s",
+                        child->ToString());
+                }
+                if (!col_name.empty() && col_name != c) {
+                    throw NotImplementedException(
+                        "DELETE WHERE: multi-column OR is not supported by the Storage API.");
+                }
+                col_name = c;
+                vals.push_back(std::move(v));
+            }
+            params.where_column   = std::move(col_name);
+            params.where_values   = std::move(vals);
+            params.where_operator = "eq";
+            return params;
+        }
+    }
+
+    throw NotImplementedException(
+        "DELETE WHERE must use a simple column comparison (=, !=) or IN expression "
+        "(Storage API limitation). Got: %s", expr.ToString());
+}
+
 //! Walk down the logical plan tree to find the first LogicalGet node.
 static LogicalGet *FindLogicalGet(LogicalOperator &op) {
     if (op.type == LogicalOperatorType::LOGICAL_GET) {
@@ -359,23 +518,181 @@ static KeboolaDeleteParams ParseFilterExpression(const Expression &expr,
         }
     }
 
+    // OR conjunction: DuckDB rewrites `col IN ('a','b')` as `col = 'a' OR col = 'b'`
+    // which is represented as BoundConjunctionExpression(CONJUNCTION_OR).
+    if (expr.expression_class == ExpressionClass::BOUND_CONJUNCTION) {
+        const auto &conj = expr.Cast<BoundConjunctionExpression>();
+        if (conj.type == ExpressionType::CONJUNCTION_OR) {
+            std::string col_name;
+            std::vector<std::string> vals;
+
+            for (const auto &child : conj.children) {
+                if (child->expression_class != ExpressionClass::BOUND_COMPARISON) {
+                    throw NotImplementedException(
+                        "DELETE WHERE IN: OR conjunction children must be simple comparisons "
+                        "(Storage API limitation). Got: %s", child->ToString());
+                }
+                const auto &cmp = child->Cast<BoundComparisonExpression>();
+                if (cmp.type != ExpressionType::COMPARE_EQUAL &&
+                    cmp.type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+                    throw NotImplementedException(
+                        "DELETE WHERE IN: OR conjunction children must be equality comparisons "
+                        "(Storage API limitation). Got: %s", child->ToString());
+                }
+                std::string c, v;
+                bool ok = (TryExtractColumnName(*cmp.left, get, c) &&
+                           TryExtractStringConstant(*cmp.right, v))
+                       || (TryExtractStringConstant(*cmp.left, v) &&
+                           TryExtractColumnName(*cmp.right, get, c));
+                if (!ok) {
+                    throw NotImplementedException(
+                        "DELETE WHERE IN: each OR branch must compare a column to a constant "
+                        "(Storage API limitation). Got: %s", child->ToString());
+                }
+                if (!col_name.empty() && col_name != c) {
+                    throw NotImplementedException(
+                        "DELETE WHERE: multi-column OR is not supported by the Storage API. "
+                        "All OR branches must reference the same column.");
+                }
+                col_name = c;
+                vals.push_back(std::move(v));
+            }
+
+            KeboolaDeleteParams or_params;
+            or_params.where_column   = std::move(col_name);
+            or_params.where_values   = std::move(vals);
+            or_params.where_operator = "eq";
+            return or_params;
+        }
+    }
+
     throw NotImplementedException(
         "DELETE WHERE must use a simple column comparison (=, !=) or IN expression "
         "(Storage API limitation). Got: %s",
         expr.ToString());
 }
 
+//! Convert a single TableFilter to KeboolaDeleteParams for the given column name.
+static KeboolaDeleteParams TableFilterToDeleteParams(const std::string &col_name,
+                                                     const TableFilter &tf) {
+    KeboolaDeleteParams params;
+    params.where_column = col_name;
+
+    if (tf.filter_type == TableFilterType::CONSTANT_COMPARISON) {
+        const auto &cf = tf.Cast<ConstantFilter>();
+        params.where_values = {cf.constant.ToString()};
+        if (cf.comparison_type == ExpressionType::COMPARE_EQUAL ||
+            cf.comparison_type == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+            params.where_operator = "eq";
+        } else if (cf.comparison_type == ExpressionType::COMPARE_NOTEQUAL ||
+                   cf.comparison_type == ExpressionType::COMPARE_DISTINCT_FROM) {
+            params.where_operator = "ne";
+        } else {
+            throw NotImplementedException(
+                "DELETE WHERE only supports = and != comparisons "
+                "(Storage API limitation). Got comparison type: %s",
+                ExpressionTypeToString(cf.comparison_type));
+        }
+        return params;
+    }
+
+    if (tf.filter_type == TableFilterType::IN_FILTER) {
+        const auto &inf = tf.Cast<InFilter>();
+        params.where_operator = "eq";
+        for (const auto &v : inf.values) {
+            params.where_values.push_back(v.ToString());
+        }
+        return params;
+    }
+
+    if (tf.filter_type == TableFilterType::CONJUNCTION_OR) {
+        // IN ('a','b') is often pushed as ConjunctionOrFilter of ConstantFilter(EQUAL)
+        const auto &orf = tf.Cast<ConjunctionOrFilter>();
+        params.where_operator = "eq";
+        for (const auto &child : orf.child_filters) {
+            if (child->filter_type != TableFilterType::CONSTANT_COMPARISON) {
+                throw NotImplementedException(
+                    "DELETE WHERE IN: unsupported filter type in OR conjunction.");
+            }
+            const auto &cf = child->Cast<ConstantFilter>();
+            if (cf.comparison_type != ExpressionType::COMPARE_EQUAL &&
+                cf.comparison_type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+                throw NotImplementedException(
+                    "DELETE WHERE IN: OR children must be equality comparisons.");
+            }
+            params.where_values.push_back(cf.constant.ToString());
+        }
+        return params;
+    }
+
+    throw NotImplementedException(
+        "DELETE WHERE: unsupported table filter type for column '%s'. "
+        "Only simple = and != comparisons and IN lists are supported.",
+        col_name);
+}
+
+//! Extract KeboolaDeleteParams from a PhysicalTableScan's table_filters.
+//!
+//! Background: DuckDB's physical planner (plan_get.cpp::CreateTableFilterSet) MOVES the
+//! filters from LogicalGet::table_filters into the PhysicalTableScan using std::move,
+//! leaving the LogicalGet's filters as null pointers. We must read from the physical
+//! scan (which has the valid filter pointers) rather than the logical plan.
+//!
+//! In the PhysicalTableScan the filter key is the RELATIVE index (position in column_ids),
+//! and column_ids[k].GetPrimaryIndex() gives the absolute schema column index into names[].
+static KeboolaDeleteParams ExtractDeleteParamsFromPhysicalScan(const PhysicalTableScan &scan) {
+    if (!scan.table_filters || scan.table_filters->filters.empty()) {
+        // No filters in the scan → plain DELETE (no WHERE clause)
+        KeboolaDeleteParams params;
+        params.allow_truncate = true;
+        return params;
+    }
+
+    const auto &tf_map = scan.table_filters->filters;
+
+    if (tf_map.size() > 1) {
+        throw NotImplementedException(
+            "DELETE WHERE with multiple predicates is not supported by the Storage API. "
+            "Combine values using IN, or run multiple DELETE statements.");
+    }
+
+    const auto &entry     = *tf_map.begin();
+    idx_t        rel_idx  = entry.first;   // relative index into scan.column_ids
+    const TableFilter &tf = *entry.second; // valid non-null pointer in the physical scan
+
+    // Map relative index → absolute column index → column name
+    if (rel_idx >= scan.column_ids.size()) {
+        throw NotImplementedException(
+            "DELETE: relative filter column index %llu out of range (column_ids.size=%llu)",
+            (unsigned long long)rel_idx, (unsigned long long)scan.column_ids.size());
+    }
+    idx_t abs_idx = scan.column_ids[rel_idx].GetPrimaryIndex();
+    if (abs_idx >= scan.names.size()) {
+        throw NotImplementedException(
+            "DELETE: absolute filter column index %llu out of range (names.size=%llu)",
+            (unsigned long long)abs_idx, (unsigned long long)scan.names.size());
+    }
+    const std::string &col_name = scan.names[abs_idx];
+
+    return TableFilterToDeleteParams(col_name, tf);
+}
+
 static KeboolaDeleteParams ExtractDeleteParams(LogicalOperator &child_logical_op) {
-    // Walk the logical plan tree (not the physical plan, which isn't built yet)
-    // to find a LogicalFilter with the WHERE predicates.
+    // Walk the logical plan to find a LogicalFilter node.
+    // NOTE: When filter_pushdown=true the optimizer may have pushed the LogicalFilter
+    // INTO LogicalGet::table_filters. In that case FindLogicalFilter returns nullptr.
+    // However, those filters are MOVED to the PhysicalTableScan during physical planning
+    // (plan_get.cpp::CreateTableFilterSet), so we cannot read them from the logical plan here.
+    // We fall back to the physical scan in PlanDelete instead (see caller).
 
     LogicalFilter *filter = FindLogicalFilter(child_logical_op);
     LogicalGet    *get    = FindLogicalGet(child_logical_op);
 
     if (!filter || filter->expressions.empty()) {
-        // No WHERE clause — allow table truncation
+        // Filter was either absent (no WHERE) or pushed into table_filters.
+        // Signal the caller to extract from the physical scan instead.
         KeboolaDeleteParams params;
-        params.allow_truncate = true;
+        params.allow_truncate = true; // temporary; overridden by PlanDelete if scan has filters
         return params;
     }
 
@@ -398,13 +715,60 @@ PhysicalOperator &KeboolaCatalog::PlanDelete(ClientContext & /*context*/,
                                               PhysicalPlanGenerator &planner,
                                               LogicalDelete &op,
                                               PhysicalOperator &plan) {
-    // Extract WHERE parameters from the logical child plan
+    // Extract WHERE parameters from the logical child plan.
     KeboolaDeleteParams params;
     if (!op.children.empty()) {
         params = ExtractDeleteParams(*op.children[0]);
     } else {
         // No child — plain DELETE (truncate)
         params.allow_truncate = true;
+    }
+
+    // IMPORTANT: DuckDB's physical planner MOVES data from the logical plan before
+    // calling PlanDelete, so we cannot rely on the logical plan for filter data.
+    // There are two cases:
+    //
+    // Case A: Simple equality filter (col = val):
+    //   The optimizer pushes it to LogicalGet::table_filters. plan_get.cpp then
+    //   MOVES it into PhysicalTableScan::table_filters. plan = PhysicalTableScan.
+    //
+    // Case B: IN / OR filter (col IN ('a','b') → col = 'a' OR col = 'b'):
+    //   The optimizer keeps it in LogicalFilter. plan_filter.cpp STD-MOVES the
+    //   expressions into a new PhysicalFilter, leaving LogicalFilter empty.
+    //   plan = PhysicalFilter wrapping PhysicalTableScan.
+    //
+    // In both cases, allow_truncate=true is returned by ExtractDeleteParams because
+    // the logical plan no longer holds valid filter data after physical planning.
+    if (params.allow_truncate) {
+        if (plan.type == PhysicalOperatorType::TABLE_SCAN) {
+            // Case A: check PhysicalTableScan's table_filters (moved from LogicalGet)
+            auto &scan = plan.Cast<PhysicalTableScan>();
+            if (scan.table_filters && !scan.table_filters->filters.empty()) {
+                params = ExtractDeleteParamsFromPhysicalScan(scan);
+            }
+        } else if (plan.type == PhysicalOperatorType::FILTER &&
+                   !plan.children.empty() &&
+                   plan.children[0].get().type == PhysicalOperatorType::TABLE_SCAN) {
+            // Case B: PhysicalFilter holds the moved LogicalFilter expressions.
+            // DuckDB converts BoundColumnRefExpression → BoundReferenceExpression during
+            // physical planning, so expressions use DataChunk position indices.
+            // Use scan.column_ids to map DataChunk index → schema index → column name.
+            auto &phys_filter = plan.Cast<PhysicalFilter>();
+            auto &scan        = plan.children[0].get().Cast<PhysicalTableScan>();
+            if (phys_filter.expression) {
+                params = ParsePhysicalFilterExpression(*phys_filter.expression,
+                                                       scan.names, scan.column_ids);
+            }
+        }
+    }
+
+    // Guard against accidental full-table deletion: require an explicit WHERE clause.
+    // The Storage API's allowTruncate endpoint deletes ALL rows without recovery,
+    // so we disallow it to prevent data loss from unintentional plain DELETE statements.
+    if (params.allow_truncate) {
+        throw NotImplementedException(
+            "DELETE without a WHERE clause is not supported (would delete all rows). "
+            "Use DELETE FROM <table> WHERE <column> = <value> to delete specific rows.");
     }
 
     auto &del = planner.Make<KeboolaDelete>(op, op.table, std::move(params));

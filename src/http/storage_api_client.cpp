@@ -421,66 +421,54 @@ void StorageApiClient::DeleteWorkspace(const std::string &workspace_id) {
 // DeleteRows
 // ---------------------------------------------------------------------------
 
-//! URL-encode a string value for use in a query parameter.
-//! Encodes space as %20 and all characters outside unreserved set (RFC 3986).
-static std::string UrlEncode(const std::string &s) {
-    static const char hex[] = "0123456789ABCDEF";
-    std::string out;
-    out.reserve(s.size() * 3);
-    for (unsigned char c : s) {
-        if ((c >= 'A' && c <= 'Z') ||
-            (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') ||
-            c == '-' || c == '_' || c == '.' || c == '~') {
-            out += static_cast<char>(c);
-        } else {
-            out += '%';
-            out += hex[(c >> 4) & 0xF];
-            out += hex[c & 0xF];
-        }
-    }
-    return out;
-}
-
 int64_t StorageApiClient::DeleteRows(const std::string &table_id,
                                       const KeboolaDeleteParams &params) {
-    // Build query-string path:
-    //   DELETE /v2/storage/tables/{table_id}/rows
-    //     ?deleteWhereColumn={col}
-    //     &deleteWhereValues[]={val1}&deleteWhereValues[]={val2}...
-    //     &deleteWhereOperator=eq|ne
-    //     &allowTruncate=1    (only when allow_truncate)
+    // Storage API DELETE /v2/storage/tables/{table_id}/rows
+    //
+    // Newer Keboola stacks (GCP) use a JSON body with whereFilters instead of the
+    // deprecated deleteWhereColumn / deleteWhereValues[] query parameters:
+    //
+    //   {"whereFilters":[{"column":"<col>","operator":"eq|ne","values":["v1","v2"]}]}
+    //
+    // Plain DELETE (no WHERE) sends allowTruncate=1 as a query parameter (still supported).
 
     std::string path = "/v2/storage/tables/" + table_id + "/rows";
 
-    if (!params.allow_truncate) {
-        // Add WHERE clause parameters
-        bool first = true;
-        auto add = [&](const std::string &key, const std::string &value) {
-            path += first ? '?' : '&';
-            first = false;
-            path += key + "=" + UrlEncode(value);
-        };
-
-        add("deleteWhereColumn", params.where_column);
-
-        for (const auto &val : params.where_values) {
-            // Use literal [] (PHP array notation) — not percent-encoded
-            path += "&deleteWhereValues[]=" + UrlEncode(val);
-        }
-
-        if (!params.where_operator.empty()) {
-            add("deleteWhereOperator", params.where_operator);
-        }
-    } else {
-        // Plain DELETE (no WHERE) — must send allowTruncate=1
-        path += "?allowTruncate=1";
-    }
-
-    // Issue the DELETE request — Storage API returns a job object
+    // Issue the DELETE request — Storage API returns an async job object
     std::string resp;
     try {
-        resp = http_.Delete(path);
+        if (params.allow_truncate) {
+            // No WHERE clause — full table delete requires allowTruncate=1
+            resp = http_.Delete(path + "?allowTruncate=1");
+        } else {
+            // Build JSON body: {"whereFilters":[{"column":"...","operator":"...","values":["...",...]}]}
+            // Manual JSON construction to avoid an extra dependency.
+            // Values are JSON-escaped via a minimal helper below.
+            auto json_escape = [](const std::string &s) -> std::string {
+                std::string out;
+                out.reserve(s.size() + 2);
+                for (unsigned char c : s) {
+                    if (c == '"')       out += "\\\"";
+                    else if (c == '\\') out += "\\\\";
+                    else if (c == '\n') out += "\\n";
+                    else if (c == '\r') out += "\\r";
+                    else if (c == '\t') out += "\\t";
+                    else                out += static_cast<char>(c);
+                }
+                return out;
+            };
+
+            std::string op = params.where_operator.empty() ? "eq" : params.where_operator;
+            std::string body = "{\"whereFilters\":[{\"column\":\"" + json_escape(params.where_column) +
+                               "\",\"operator\":\"" + json_escape(op) + "\",\"values\":[";
+            for (std::size_t i = 0; i < params.where_values.size(); ++i) {
+                if (i > 0) body += ",";
+                body += "\"" + json_escape(params.where_values[i]) + "\"";
+            }
+            body += "]}]}";
+
+            resp = http_.Delete(path, body, "application/json");
+        }
     } catch (const std::exception &e) {
         throw IOException("Keboola Storage API delete-rows failed for table '%s': %s",
                           table_id, std::string(e.what()));
@@ -490,7 +478,7 @@ int64_t StorageApiClient::DeleteRows(const std::string &table_id,
     auto d = ParseJson(resp, "delete-rows");
     yyjson_val *root = yyjson_doc_get_root(d.doc);
 
-    std::string job_id = JsonStrOr(root, "id");
+    std::string job_id = JsonIdOr(root, "id");
     if (job_id.empty()) {
         // Some API versions return 204 with empty body or immediate status
         // Check if there's a "status" field indicating the job is already done
@@ -532,7 +520,9 @@ int64_t StorageApiClient::DeleteRows(const std::string &table_id,
         std::string status = JsonStrOr(jroot, "status");
 
         if (status == "success") {
-            // Try to extract the row count from results.deletedRowsCount
+            // Try to extract the row count from results.deletedRowsCount.
+            // The GCP API may return deletedRowsCount as an integer or as a
+            // JSON string (e.g. "2") — handle both.
             yyjson_val *results = yyjson_obj_get(jroot, "results");
             if (results && yyjson_is_obj(results)) {
                 yyjson_val *cnt = yyjson_obj_get(results, "deletedRowsCount");
@@ -541,6 +531,14 @@ int64_t StorageApiClient::DeleteRows(const std::string &table_id,
                         return static_cast<int64_t>(yyjson_get_sint(cnt));
                     } else if (yyjson_is_uint(cnt)) {
                         return static_cast<int64_t>(yyjson_get_uint(cnt));
+                    } else if (yyjson_is_real(cnt)) {
+                        return static_cast<int64_t>(yyjson_get_real(cnt));
+                    } else if (yyjson_is_str(cnt)) {
+                        const char *s = yyjson_get_str(cnt);
+                        if (s) {
+                            try { return static_cast<int64_t>(std::stoll(s)); }
+                            catch (...) {}
+                        }
                     }
                 }
             }

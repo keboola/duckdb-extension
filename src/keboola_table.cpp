@@ -1,5 +1,6 @@
 #include "keboola_table.hpp"
 #include "keboola_scan.hpp"
+#include "http/query_service_client.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -31,10 +32,36 @@ TableFunction KeboolaTableEntry::GetScanFunction(ClientContext & /*context*/,
                                                   unique_ptr<FunctionData> &bind_data) {
     auto func = KeboolaGetScanFunction();
 
+    // Phase 6: lazy snapshot — pull this table on first scan if not yet loaded.
+    if (connection_->snapshot_mode && !is_snapshot_) {
+        try {
+            QueryServiceClient qsc(
+                connection_->service_urls.query_url,
+                connection_->token,
+                connection_->branch_id,
+                connection_->workspace_id
+            );
+            // SELECT * to fetch all rows; filters are applied after local load.
+            std::string sql = "SELECT * FROM \"" + table_info_.id + "\"";
+            // Use the same quoting as KeboolaSqlGenerator: split on last dot.
+            auto dot = table_info_.id.rfind('.');
+            if (dot != std::string::npos) {
+                std::string schema_part = table_info_.id.substr(0, dot);
+                std::string table_part  = table_info_.id.substr(dot + 1);
+                sql = "SELECT * FROM \"" + schema_part + "\".\"" + table_part + "\"";
+            }
+            QueryServiceResult result = qsc.ExecuteQuery(sql);
+            SetSnapshotData(std::move(result.rows), std::move(result.null_mask));
+        } catch (const std::exception &) {
+            // If pull fails, fall through to live mode for this scan.
+        }
+    }
+
     // Pre-populate bind_data with this table's connection and metadata.
     auto data = make_uniq<KeboolaScanBindData>();
-    data->connection = connection_;
-    data->table_info = table_info_;
+    data->connection  = connection_;
+    data->table_info  = table_info_;
+    data->table_entry = this;  // enables get_bind_info for DELETE/UPDATE binder
 
     // Phase 6: if snapshot data is available, skip live Query Service call
     if (is_snapshot_) {

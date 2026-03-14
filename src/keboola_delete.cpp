@@ -104,11 +104,16 @@ SourceResultType KeboolaDelete::GetDataInternal(ExecutionContext & /*context*/,
 
     auto &gstate = sink_state->Cast<KeboolaDeleteGlobalState>();
 
+    // When the Storage API does not return a row count (-1), return no rows so
+    // that callers see NULL from fetchone() rather than an incorrect 0 count.
+    if (gstate.delete_count < 0) {
+        chunk.SetCardinality(0);
+        source_state.finished = true;
+        return SourceResultType::FINISHED;
+    }
+
     chunk.SetCardinality(1);
-    // Storage API delete-rows returns -1 when row count is unavailable;
-    // clamp to 0 in that case so callers always see a non-negative value.
-    int64_t count = gstate.delete_count >= 0 ? gstate.delete_count : 0;
-    chunk.SetValue(0, 0, Value::BIGINT(count));
+    chunk.SetValue(0, 0, Value::BIGINT(gstate.delete_count));
 
     source_state.finished = true;
     return SourceResultType::FINISHED;

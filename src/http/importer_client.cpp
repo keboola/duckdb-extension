@@ -33,14 +33,17 @@ int64_t ImporterClient::WriteTable(
     const std::string &csv_data,
     bool incremental
 ) {
-    // Build multipart form data per the Keboola Importer API spec
+    // Build multipart form data per the Keboola Importer API spec.
+    // treatValuesAsNull[] = "" instructs the importer to store empty CSV fields
+    // (our NULL representation) as SQL NULL rather than as empty strings.
     httplib::UploadFormDataItems items = {
-        {"tableId",     table_id,                  "",         ""},
-        {"incremental", incremental ? "1" : "0",   "",         ""},
-        {"delimiter",   ",",                        "",         ""},
-        {"enclosure",   "\"",                       "",         ""},
-        {"escapedBy",   "",                         "",         ""},
-        {"data",        csv_data,                   "data.csv", "text/csv"},
+        {"tableId",              table_id,                  "",         ""},
+        {"incremental",          incremental ? "1" : "0",   "",         ""},
+        {"delimiter",            ",",                        "",         ""},
+        {"enclosure",            "\"",                       "",         ""},
+        {"escapedBy",            "",                         "",         ""},
+        {"treatValuesAsNull[]",  "",                         "",         ""},
+        {"data",                 csv_data,                   "data.csv", "text/csv"},
     };
 
     // Create httplib client directly (KeboolaHttpClient wrapper doesn't support multipart)

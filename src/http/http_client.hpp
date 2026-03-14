@@ -43,11 +43,20 @@ public:
         });
     }
 
-    //! HTTP DELETE.
+    //! HTTP DELETE (no body).
     std::string Delete(const std::string &path) {
         return ExecuteWithRetry([&](httplib::Client &cli) {
             httplib::Headers headers = {{"X-StorageApi-Token", token_}};
             return cli.Delete(path.c_str(), headers);
+        });
+    }
+
+    //! HTTP DELETE with a JSON body (required by newer Keboola GCP API endpoints).
+    std::string Delete(const std::string &path, const std::string &body,
+                       const std::string &content_type = "application/json") {
+        return ExecuteWithRetry([&](httplib::Client &cli) {
+            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            return cli.Delete(path.c_str(), headers, body, content_type.c_str());
         });
     }
 

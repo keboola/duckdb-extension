@@ -106,6 +106,9 @@ def test_snapshot_is_offline_after_load(duckdb_con, keboola_token, keboola_url,
     try:
         ref = kbc_table_ref(test_table["table_id"]).replace("kbc.", "kbc_snap_offline.", 1)
 
+        # Warm-up: trigger lazy pull so data is local before we intercept sockets.
+        duckdb_con.execute(f"SELECT COUNT(*) FROM {ref};")
+
         # Track socket.create_connection calls after the snapshot is loaded
         original_connect = socket.create_connection
         connect_calls: list = []

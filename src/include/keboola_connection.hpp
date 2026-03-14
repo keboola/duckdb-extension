@@ -17,6 +17,8 @@ struct KeboolaConnection {
     std::string workspace_id;
     KeboolaServiceUrls service_urls;
     std::shared_ptr<StorageApiClient> storage_client;
+    //! When true, tables are lazily pulled into local storage on first scan.
+    bool snapshot_mode = false;
 };
 
 } // namespace duckdb

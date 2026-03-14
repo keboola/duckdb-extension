@@ -11,6 +11,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/table_filter.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 
 #include <string>
 #include <vector>
@@ -180,11 +181,15 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
 
     const auto &col_ids = input.column_ids;
 
+    // Build output column map: maps output col index → data col index (or -1 = row-id).
+    // This lets the scan function output the correct row index for virtual row-id columns
+    // rather than trying to cast actual row data to BIGINT.
     if (!col_ids.empty()) {
+        int data_idx = 0;
         for (auto cid : col_ids) {
             if (cid == COLUMN_IDENTIFIER_ROW_ID) {
-                // Virtual row-id column — skip from SQL but add BIGINT placeholder type
                 gstate->column_types.push_back(LogicalType::BIGINT);
+                gstate->data_col_map.push_back(-1);
                 continue;
             }
             if (cid < all_cols.size()) {
@@ -193,15 +198,25 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
             } else {
                 gstate->column_types.push_back(LogicalType::VARCHAR);
             }
+            gstate->data_col_map.push_back(data_idx++);
         }
     }
 
-    // If projection yields nothing (or all were row-ids), fall back to all columns
+    // If no real columns projected, we still need to fetch row data so that COUNT(*) and
+    // row-id-only queries can determine the number of rows.  Populate projected_names
+    // with all columns but leave column_types / data_col_map untouched — those already
+    // correctly describe the OUTPUT layout (e.g. a single BIGINT row-id column).
     if (projected_names.empty()) {
-        gstate->column_types.clear();
         for (const auto &col : all_cols) {
             projected_names.push_back(col.name);
-            gstate->column_types.push_back(TypeStringToLogicalType(col.duckdb_type));
+        }
+        // col_ids was completely empty (no pushdown at all): also set output mapping.
+        if (gstate->column_types.empty()) {
+            int data_idx = 0;
+            for (const auto &col : all_cols) {
+                gstate->column_types.push_back(TypeStringToLogicalType(col.duckdb_type));
+                gstate->data_col_map.push_back(data_idx++);
+            }
         }
     }
 
@@ -296,18 +311,29 @@ static void KeboolaScanFunction(ClientContext & /*context*/,
         for (idx_t col_idx = 0; col_idx < col_count; col_idx++) {
             auto &vec = output.data[col_idx];
 
-            bool is_null = false;
-            if (row_nulls && col_idx < row_nulls->size()) {
-                is_null = (*row_nulls)[col_idx];
+            // Resolve which data column this output column maps to (-1 = row-id).
+            int dc = (col_idx < gstate.data_col_map.size())
+                         ? gstate.data_col_map[col_idx]
+                         : static_cast<int>(col_idx);
+
+            if (dc == -1) {
+                // Virtual row-id column: output the row index as BIGINT.
+                vec.SetValue(count, Value::BIGINT(static_cast<int64_t>(row_idx)));
+                continue;
             }
-            if (col_idx >= row.size()) {
+
+            bool is_null = false;
+            if (row_nulls && static_cast<idx_t>(dc) < row_nulls->size()) {
+                is_null = (*row_nulls)[static_cast<idx_t>(dc)];
+            }
+            if (static_cast<idx_t>(dc) >= row.size()) {
                 is_null = true;
             }
 
             if (is_null) {
                 FlatVector::SetNull(vec, count, true);
             } else {
-                const std::string &cell = row[col_idx];
+                const std::string &cell = row[static_cast<idx_t>(dc)];
                 LogicalType ltype = (col_idx < col_types.size())
                                         ? col_types[col_idx]
                                         : LogicalType::VARCHAR;
@@ -326,11 +352,24 @@ static void KeboolaScanFunction(ClientContext & /*context*/,
 // KeboolaGetScanFunction
 // ---------------------------------------------------------------------------
 
+static BindInfo KeboolaScanGetBindInfo(const optional_ptr<FunctionData> bind_data) {
+    if (bind_data) {
+        const auto &d = bind_data->Cast<KeboolaScanBindData>();
+        if (d.table_entry) {
+            // BindInfo(TableCatalogEntry &) requires non-const; the entry is owned by
+            // the catalog and lives as long as the connection, so the cast is safe.
+            return BindInfo(const_cast<TableCatalogEntry &>(*d.table_entry));
+        }
+    }
+    return BindInfo(ScanType::TABLE);
+}
+
 TableFunction KeboolaGetScanFunction() {
     TableFunction func("keboola_scan", {}, KeboolaScanFunction, KeboolaScanBind);
     func.init_global         = KeboolaScanInitGlobal;
     func.filter_pushdown     = true;
     func.projection_pushdown = true;
+    func.get_bind_info       = KeboolaScanGetBindInfo;
     return func;
 }
 
