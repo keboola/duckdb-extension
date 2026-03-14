@@ -77,6 +77,17 @@ static bool JsonBoolOr(yyjson_val *obj, const char *key, bool def = false) {
     return yyjson_is_true(v);
 }
 
+//! Read a field that may be a JSON string OR a JSON integer (e.g. branch/bucket id).
+static std::string JsonIdOr(yyjson_val *obj, const char *key, const char *def = "") {
+    if (!obj) return def;
+    yyjson_val *v = yyjson_obj_get(obj, key);
+    if (!v) return def;
+    if (yyjson_is_str(v)) return yyjson_get_str(v);
+    if (yyjson_is_int(v))  return std::to_string(yyjson_get_sint(v));
+    if (yyjson_is_uint(v)) return std::to_string(yyjson_get_uint(v));
+    return def;
+}
+
 // ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
@@ -151,7 +162,7 @@ KeboolaBranchInfo StorageApiClient::ResolveBranch(const std::string &branch_name
     yyjson_val *branch;
     yyjson_arr_foreach(root, idx, max, branch) {
         KeboolaBranchInfo info;
-        info.id         = JsonStrOr(branch, "id");
+        info.id         = JsonIdOr(branch, "id");
         info.name       = JsonStrOr(branch, "name");
         info.is_default = JsonBoolOr(branch, "isDefault");
 
