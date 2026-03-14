@@ -112,7 +112,6 @@ class KeboolaStorageApi:
         self.session = requests.Session()
         self.session.headers.update({
             "X-StorageApi-Token": token,
-            "Content-Type": "application/json",
         })
 
     def get(self, path: str, **kwargs):
