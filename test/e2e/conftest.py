@@ -61,9 +61,8 @@ def keboola_extension_path():
 @pytest.fixture
 def duckdb_con(keboola_extension_path):
     """Fresh in-memory DuckDB connection per test with keboola extension loaded."""
-    con = duckdb.connect(":memory:")
-    # Allow loading of unsigned community extensions built locally
-    con.execute("SET allow_unsigned_extensions = true;")
+    # allow_unsigned_extensions must be set at connection creation time (v1.5.0+)
+    con = duckdb.connect(":memory:", config={"allow_unsigned_extensions": True})
     con.execute(f"LOAD '{keboola_extension_path}';")
     yield con
     con.close()
