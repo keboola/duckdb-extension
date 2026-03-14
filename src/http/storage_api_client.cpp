@@ -358,7 +358,7 @@ KeboolaWorkspaceInfo StorageApiClient::FindOrCreateWorkspace() {
                     std::string value = JsonStrOr(m, "value");
                     if (key == "created_by" && value == "duckdb-extension") {
                         KeboolaWorkspaceInfo info;
-                        info.id   = JsonStrOr(ws, "id");
+                        info.id   = JsonIdOr(ws, "id");
                         info.name = JsonStrOr(ws, "name");
                         yyjson_val *conn = yyjson_obj_get(ws, "connection");
                         info.type = JsonStrOr(conn, "backend");
@@ -382,7 +382,7 @@ KeboolaWorkspaceInfo StorageApiClient::FindOrCreateWorkspace() {
     yyjson_val *croot = yyjson_doc_get_root(cd.doc);
 
     KeboolaWorkspaceInfo info;
-    info.id   = JsonStrOr(croot, "id");
+    info.id   = JsonIdOr(croot, "id");
     info.name = JsonStrOr(croot, "name");
     yyjson_val *conn = yyjson_obj_get(croot, "connection");
     info.type = JsonStrOr(conn, "backend");
