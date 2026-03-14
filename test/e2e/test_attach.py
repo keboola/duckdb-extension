@@ -105,6 +105,7 @@ def test_attach_read_only(duckdb_con, keboola_token, keboola_url, test_table):
 # 4. SNAPSHOT mode
 # ---------------------------------------------------------------------------
 
+@pytest.mark.timeout(300)
 def test_attach_snapshot(duckdb_con, keboola_token, keboola_url,
                          storage_api, test_table, test_prefix):
     """
@@ -203,6 +204,7 @@ def test_attach_wrong_url(duckdb_con, keboola_token):
 # 7. DETACH cleans up workspace
 # ---------------------------------------------------------------------------
 
+@pytest.mark.timeout(300)
 def test_detach_cleans_workspace(duckdb_con, keboola_token, keboola_url, storage_api):
     """
     After DETACH the workspace created by the extension should be deleted
@@ -241,6 +243,7 @@ def test_detach_cleans_workspace(duckdb_con, keboola_token, keboola_url, storage
 # 8. Re-attach reuses workspace
 # ---------------------------------------------------------------------------
 
+@pytest.mark.timeout(300)
 def test_reattach_reuses_workspace(duckdb_con, keboola_token, keboola_url, storage_api):
     """
     Two sequential ATTACHes (with DETACH in between) should reuse the same

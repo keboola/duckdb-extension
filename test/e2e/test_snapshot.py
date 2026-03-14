@@ -19,7 +19,7 @@ import pandas as pd
 import unittest.mock as mock
 from conftest import kbc_table_ref
 
-pytestmark = pytest.mark.live
+pytestmark = [pytest.mark.live, pytest.mark.timeout(300)]
 
 
 # ---------------------------------------------------------------------------
