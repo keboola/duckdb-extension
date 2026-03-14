@@ -6,6 +6,7 @@ dependencies = [
     "duckdb>=1.0.0",
     "pytest>=8.0.0",
     "pytest-timeout>=2.3.0",
+    "pytest-xdist>=3.0.0",
     "pandas>=2.0.0",
     "requests>=2.31.0",
 ]
@@ -16,4 +17,4 @@ markers = [
     "live: requires live Keboola connection (KEBOOLA_TOKEN + KEBOOLA_URL)",
     "offline: no network required, always runnable in CI",
 ]
-timeout = 60
+timeout = 120

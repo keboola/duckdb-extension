@@ -35,13 +35,44 @@ jobs:
       enable_rust: false
 
   # ---------------------------------------------------------------------------
-  # E2E live tests — run on tag pushes as a release gate
+  # Fast linux_amd64 build for E2E gate — starts immediately on tag push,
+  # finishes before Windows/WASM so e2e-gate can start sooner.
+  # ---------------------------------------------------------------------------
+  e2e-linux-build:
+    name: Build linux_amd64 for E2E
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build libssl-dev pkg-config unzip curl
+
+      - name: Build extension
+        run: make release
+
+      - name: Upload E2E artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: keboola-e2e-linux_amd64
+          path: build/release/extension/keboola/keboola.duckdb_extension
+          retention-days: 3
+
+  # ---------------------------------------------------------------------------
+  # E2E live tests — run on tag pushes as a release gate.
+  # Waits only for the fast linux build (not all platforms).
   # Requires KEBOOLA_TOKEN and KEBOOLA_URL secrets to be configured.
   # community-release will NOT proceed if this job fails.
   # ---------------------------------------------------------------------------
   e2e-gate:
     name: E2E release gate
-    needs: duckdb-stable-build
+    needs: e2e-linux-build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
@@ -57,7 +88,7 @@ jobs:
       - name: Download linux_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: keboola-v1.5.0-extension-linux_amd64
+          name: keboola-e2e-linux_amd64
           path: artifacts/
 
       - name: Check credentials are available
@@ -67,12 +98,6 @@ jobs:
             echo "Add it in: Settings → Secrets and variables → Actions → New repository secret"
             exit 1
           fi
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build libssl-dev pkg-config unzip curl
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -88,6 +113,7 @@ jobs:
         run: |
           uv run pytest . \
             -m live \
+            -n 4 \
             --timeout=120 \
             -v \
             --tb=short \

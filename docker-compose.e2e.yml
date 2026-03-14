@@ -1,0 +1,23 @@
+# Run E2E tests locally via Docker (Linux extension binary required).
+#
+# Prerequisites:
+#   1. Set KEBOOLA_TOKEN env var (KEBOOLA_URL defaults to connection.keboola.com)
+#   2. Have a linux extension binary at local_test/keboola_linux.duckdb_extension
+#      — download from the latest CI run:
+#        gh run download --name keboola-e2e-linux_amd64 -D local_test/linux/
+#
+# Usage:
+#   KEBOOLA_TOKEN=xxx docker compose -f docker-compose.e2e.yml up --build
+
+services:
+  e2e:
+    build:
+      context: test/e2e
+      dockerfile: Dockerfile
+    volumes:
+      - ./test/e2e:/tests
+      - ./local_test/linux:/ext:ro
+    environment:
+      KEBOOLA_TOKEN: ${KEBOOLA_TOKEN}
+      KEBOOLA_URL: ${KEBOOLA_URL:-https://connection.keboola.com}
+      KEBOOLA_EXTENSION_PATH: /ext/keboola.duckdb_extension
