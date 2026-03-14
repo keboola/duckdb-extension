@@ -249,7 +249,7 @@ def test_pagination(storage_api, kbc, test_table):
 # 12. Empty table
 # ---------------------------------------------------------------------------
 
-def test_empty_table(kbc, test_table):
+def test_empty_table(test_table, kbc):
     """SELECT from an empty table must return 0 rows without error."""
     ref = kbc_table_ref(test_table["table_id"])
     df = kbc.execute(f"SELECT * FROM {ref};").fetchdf()

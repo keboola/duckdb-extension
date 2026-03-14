@@ -29,7 +29,7 @@ def _fetchall(kbc_con, table_ref: str) -> pd.DataFrame:
 # 1. Single row insert
 # ---------------------------------------------------------------------------
 
-def test_insert_single_row(kbc, test_table):
+def test_insert_single_row(test_table, kbc):
     """INSERT 1 row, then SELECT it back and verify all field values."""
     ref = kbc_table_ref(test_table["table_id"])
     kbc.execute(f"INSERT INTO {ref} VALUES ('r1', 'SingleRow', 'val1');")
@@ -45,7 +45,7 @@ def test_insert_single_row(kbc, test_table):
 # 2. INSERT NULL values
 # ---------------------------------------------------------------------------
 
-def test_insert_null_values(kbc, test_table):
+def test_insert_null_values(test_table, kbc):
     """INSERT a row with NULL in the 'value' column; SELECT back must return NULL."""
     ref = kbc_table_ref(test_table["table_id"])
     kbc.execute(f"INSERT INTO {ref} (id, name, value) VALUES ('null1', 'NullTest', NULL);")
@@ -60,7 +60,7 @@ def test_insert_null_values(kbc, test_table):
 # 3. Multi-row insert
 # ---------------------------------------------------------------------------
 
-def test_insert_multi_row(kbc, test_table):
+def test_insert_multi_row(test_table, kbc):
     """INSERT 5 rows in a single VALUES clause; COUNT(*) must equal 5."""
     ref = kbc_table_ref(test_table["table_id"])
     kbc.execute(f"""
@@ -78,7 +78,7 @@ def test_insert_multi_row(kbc, test_table):
 # 4. INSERT INTO ... SELECT from local table
 # ---------------------------------------------------------------------------
 
-def test_insert_select_from_local(kbc, test_table):
+def test_insert_select_from_local(test_table, kbc):
     """INSERT INTO kbc_table SELECT * FROM a local DuckDB relation."""
     ref = kbc_table_ref(test_table["table_id"])
     kbc.execute("""
@@ -104,7 +104,7 @@ def test_insert_select_from_local(kbc, test_table):
 # 5. CSV edge cases (commas, quotes, newlines in values)
 # ---------------------------------------------------------------------------
 
-def test_insert_csv_edge_cases(kbc, test_table):
+def test_insert_csv_edge_cases(test_table, kbc):
     """Values with commas, double-quotes, and embedded newlines must round-trip cleanly."""
     ref = kbc_table_ref(test_table["table_id"])
     tricky_values = [
@@ -133,7 +133,7 @@ def test_insert_csv_edge_cases(kbc, test_table):
 # 6. INSERT returns affected row count
 # ---------------------------------------------------------------------------
 
-def test_insert_returns_count(kbc, test_table):
+def test_insert_returns_count(test_table, kbc):
     """The DuckDB INSERT statement must report the number of affected rows."""
     ref = kbc_table_ref(test_table["table_id"])
     result = kbc.execute(f"""
@@ -155,7 +155,7 @@ def test_insert_returns_count(kbc, test_table):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.timeout(60)
-def test_insert_large_batch(kbc, test_table):
+def test_insert_large_batch(test_table, kbc):
     """INSERT 1000 rows via a single INSERT...SELECT; COUNT(*) must be 1000."""
     ref = kbc_table_ref(test_table["table_id"])
 
@@ -176,7 +176,7 @@ def test_insert_large_batch(kbc, test_table):
 # 8. INSERT wrong column count raises error
 # ---------------------------------------------------------------------------
 
-def test_insert_wrong_column_count(kbc, test_table):
+def test_insert_wrong_column_count(test_table, kbc):
     """INSERT with wrong number of columns must raise a descriptive error."""
     ref = kbc_table_ref(test_table["table_id"])
     with pytest.raises(Exception) as exc_info:

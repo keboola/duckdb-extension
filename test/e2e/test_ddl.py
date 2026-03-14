@@ -17,12 +17,18 @@ pytestmark = pytest.mark.live
 # ---------------------------------------------------------------------------
 
 def _schema_names(kbc_con) -> list[str]:
-    rows = kbc_con.execute("SHOW SCHEMAS IN kbc;").fetchall()
+    rows = kbc_con.execute(
+        "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'kbc';"
+    ).fetchall()
     return [r[0] for r in rows]
 
 
 def _table_names_in(kbc_con, schema: str) -> list[str]:
-    rows = kbc_con.execute(f'SHOW TABLES IN kbc."{schema}";').fetchall()
+    rows = kbc_con.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_catalog = 'kbc' AND table_schema = ?;",
+        [schema]
+    ).fetchall()
     return [r[0] for r in rows]
 
 
@@ -30,7 +36,7 @@ def _table_names_in(kbc_con, schema: str) -> list[str]:
 # 1. CREATE SCHEMA (creates a Keboola bucket)
 # ---------------------------------------------------------------------------
 
-def test_create_schema(kbc, test_prefix):
+def test_create_schema(test_prefix, kbc):
     """CREATE SCHEMA must create a new Keboola bucket and appear in SHOW SCHEMAS."""
     # bucket name: "in.c-ddltest-<prefix>"
     schema_name = f"in.c-ddltest-{test_prefix.replace('_', '-').rstrip('-')}"
@@ -52,7 +58,7 @@ def test_create_schema(kbc, test_prefix):
 # 2. CREATE TABLE inside existing schema
 # ---------------------------------------------------------------------------
 
-def test_create_table(kbc, test_bucket, test_prefix):
+def test_create_table(test_bucket, kbc, test_prefix):
     """CREATE TABLE must create the table in Keboola and appear in SHOW TABLES."""
     table_name = f"{test_prefix}ddl_create"
     kbc.execute(f"""
@@ -78,7 +84,7 @@ def test_create_table(kbc, test_bucket, test_prefix):
 # 3. CREATE TABLE then INSERT + SELECT (full round trip)
 # ---------------------------------------------------------------------------
 
-def test_create_table_then_insert_select(kbc, test_bucket, test_prefix):
+def test_create_table_then_insert_select(test_bucket, kbc, test_prefix):
     """Create a table, insert rows, and read them back."""
     table_name = f"{test_prefix}ddl_roundtrip"
     ref = f'kbc."{test_bucket}".{table_name}'
@@ -100,7 +106,7 @@ def test_create_table_then_insert_select(kbc, test_bucket, test_prefix):
 # 4. DROP TABLE removes it from SHOW TABLES
 # ---------------------------------------------------------------------------
 
-def test_drop_table(kbc, test_bucket, test_prefix):
+def test_drop_table(test_bucket, kbc, test_prefix):
     """DROP TABLE must remove the table from Keboola and from SHOW TABLES."""
     table_name = f"{test_prefix}ddl_drop"
     ref = f'kbc."{test_bucket}".{table_name}'
@@ -121,7 +127,7 @@ def test_drop_table(kbc, test_bucket, test_prefix):
 # 5. DROP SCHEMA removes the bucket
 # ---------------------------------------------------------------------------
 
-def test_drop_schema(kbc, test_prefix):
+def test_drop_schema(test_prefix, kbc):
     """DROP SCHEMA (empty bucket) must remove it from SHOW SCHEMAS."""
     schema_name = f"in.c-droptest-{test_prefix.replace('_', '-').rstrip('-')}"
     kbc.execute(f'CREATE SCHEMA kbc."{schema_name}";')
@@ -142,7 +148,7 @@ def test_drop_schema(kbc, test_prefix):
 # 6. CREATE TABLE with typed columns
 # ---------------------------------------------------------------------------
 
-def test_create_table_typed_columns(kbc, test_bucket, test_prefix):
+def test_create_table_typed_columns(test_bucket, kbc, test_prefix):
     """CREATE TABLE with BIGINT, DOUBLE, BOOLEAN, DATE, TIMESTAMP columns."""
     table_name = f"{test_prefix}ddl_typed"
     ref = f'kbc."{test_bucket}".{table_name}'
@@ -186,7 +192,7 @@ def test_create_table_typed_columns(kbc, test_bucket, test_prefix):
 # 7. CREATE duplicate schema fails
 # ---------------------------------------------------------------------------
 
-def test_create_duplicate_schema_fails(kbc, test_bucket):
+def test_create_duplicate_schema_fails(test_bucket, kbc):
     """CREATE SCHEMA for an already-existing bucket must raise an error."""
     with pytest.raises(Exception) as exc_info:
         kbc.execute(f'CREATE SCHEMA kbc."{test_bucket}";')
@@ -197,7 +203,7 @@ def test_create_duplicate_schema_fails(kbc, test_bucket):
 # 8. CREATE duplicate table fails
 # ---------------------------------------------------------------------------
 
-def test_create_duplicate_table_fails(kbc, test_table):
+def test_create_duplicate_table_fails(test_table, kbc):
     """CREATE TABLE with the same name in the same schema must raise an error."""
     ref = kbc_table_ref(test_table["table_id"])
     bucket_id = test_table["bucket_id"]
@@ -215,7 +221,7 @@ def test_create_duplicate_table_fails(kbc, test_table):
 # 9. DROP non-existent table fails
 # ---------------------------------------------------------------------------
 
-def test_drop_nonexistent_table_fails(kbc, test_bucket):
+def test_drop_nonexistent_table_fails(test_bucket, kbc):
     """DROP TABLE for a table that doesn't exist must raise an error."""
     with pytest.raises(Exception) as exc_info:
         kbc.execute(

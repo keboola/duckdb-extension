@@ -42,17 +42,17 @@ private:
     std::string SubmitQuery(const std::string &sql);
 
     //! Poll GET /api/v1/queries/{job_id} with exponential backoff until status != "processing".
-    //! Throws IOException on timeout or error status.
-    void PollUntilDone(const std::string &job_id);
+    //! Throws IOException on timeout or error status. Returns the statement ID.
+    std::string PollUntilDone(const std::string &job_id);
 
     //! Fetch all result pages for a completed job.
-    QueryServiceResult FetchResults(const std::string &job_id);
+    QueryServiceResult FetchResults(const std::string &job_id, const std::string &statement_id);
 
     KeboolaHttpClient http_;
     std::string branch_id_;
     std::string workspace_id_;
 
-    static constexpr int QUERY_PAGE_SIZE = 1000;
+    static constexpr int QUERY_PAGE_SIZE = 10000;
     static constexpr int POLL_INITIAL_MS = 100;
     static constexpr double POLL_BACKOFF = 1.5;
     static constexpr int POLL_MAX_MS = 2000;

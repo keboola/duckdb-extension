@@ -128,7 +128,7 @@ optional_ptr<CatalogEntry> KeboolaCatalog::CreateSchema(CatalogTransaction /*tra
                                schema_name);
     }
 
-    // Parse bucket stage and name from "stage.name" (e.g. "in.c-myapp")
+    // Parse bucket stage and name from "stage.c-name" (e.g. "in.c-myapp")
     std::string stage = "in";
     std::string bucket_name = schema_name;
 
@@ -136,6 +136,12 @@ optional_ptr<CatalogEntry> KeboolaCatalog::CreateSchema(CatalogTransaction /*tra
     if (dot != std::string::npos) {
         stage       = schema_name.substr(0, dot);
         bucket_name = schema_name.substr(dot + 1);
+    }
+
+    // The Storage API adds the "c-" prefix automatically.
+    // Strip it here so the bucket is not created with a double prefix (e.g. "c-c-name").
+    if (bucket_name.size() > 2 && bucket_name[0] == 'c' && bucket_name[1] == '-') {
+        bucket_name = bucket_name.substr(2);
     }
 
     // Create bucket via Storage API

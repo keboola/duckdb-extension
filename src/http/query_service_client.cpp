@@ -78,8 +78,8 @@ QueryServiceClient::QueryServiceClient(const std::string &query_service_url,
 
 QueryServiceResult QueryServiceClient::ExecuteQuery(const std::string &sql) {
     auto job_id = SubmitQuery(sql);
-    PollUntilDone(job_id);
-    return FetchResults(job_id);
+    auto statement_id = PollUntilDone(job_id);
+    return FetchResults(job_id, statement_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ std::string QueryServiceClient::SubmitQuery(const std::string &sql) {
         }
     }
 
-    std::string body = "{\"sql\":\"" + escaped_sql + "\",\"parameters\":[]}";
+    std::string body = "{\"statements\":[\"" + escaped_sql + "\"],\"transactional\":false}";
     std::string path = "/api/v1/branches/" + branch_id_ +
                        "/workspaces/" + workspace_id_ + "/queries";
 
@@ -120,7 +120,7 @@ std::string QueryServiceClient::SubmitQuery(const std::string &sql) {
     auto d = QSParseJson(resp, "submit-query");
     yyjson_val *root = yyjson_doc_get_root(d.doc);
 
-    std::string job_id = QSStrOr(root, "id");
+    std::string job_id = QSStrOr(root, "queryJobId");
     if (job_id.empty()) {
         throw IOException("Keboola QueryService: no job id in submit response");
     }
@@ -131,7 +131,7 @@ std::string QueryServiceClient::SubmitQuery(const std::string &sql) {
 // PollUntilDone — exponential backoff
 // ---------------------------------------------------------------------------
 
-void QueryServiceClient::PollUntilDone(const std::string &job_id) {
+std::string QueryServiceClient::PollUntilDone(const std::string &job_id) {
     std::string path = "/api/v1/queries/" + job_id;
 
     int elapsed_ms = 0;
@@ -155,18 +155,40 @@ void QueryServiceClient::PollUntilDone(const std::string &job_id) {
 
         std::string status = QSStrOr(root, "status");
 
-        if (status == "success") {
-            return;
-        } else if (status == "error") {
-            std::string error_msg = QSStrOr(root, "error");
+        if (status == "completed") {
+            // Extract statement ID from statements[0].id
+            yyjson_val *stmts = yyjson_obj_get(root, "statements");
+            if (stmts && yyjson_is_arr(stmts)) {
+                yyjson_val *first = yyjson_arr_get_first(stmts);
+                if (first) {
+                    std::string stmt_id = QSStrOr(first, "id");
+                    if (!stmt_id.empty()) {
+                        return stmt_id;
+                    }
+                }
+            }
+            throw IOException("Keboola QueryService: completed job %s has no statement id", job_id);
+        } else if (status == "failed" || status == "canceled") {
+            // Try to get error from statements[0].error first, then root level
+            std::string error_msg;
+            yyjson_val *stmts = yyjson_obj_get(root, "statements");
+            if (stmts && yyjson_is_arr(stmts)) {
+                yyjson_val *first = yyjson_arr_get_first(stmts);
+                if (first) {
+                    error_msg = QSStrOr(first, "error");
+                }
+            }
+            if (error_msg.empty()) {
+                error_msg = QSStrOr(root, "error");
+            }
             if (error_msg.empty()) {
                 error_msg = QSStrOr(root, "message");
             }
             if (error_msg.empty()) {
                 error_msg = "unknown error";
             }
-            throw IOException("Keboola QueryService: query failed: %s", error_msg);
-        } else if (status == "processing" || status == "waiting" || status == "running") {
+            throw IOException("Keboola QueryService: query %s: %s", status, error_msg);
+        } else if (status == "created" || status == "enqueued" || status == "processing") {
             // keep polling
         } else if (!status.empty()) {
             // Unknown status — keep polling conservatively
@@ -187,15 +209,16 @@ void QueryServiceClient::PollUntilDone(const std::string &job_id) {
 // FetchResults — paginated
 // ---------------------------------------------------------------------------
 
-QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id) {
+QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id,
+                                                      const std::string &statement_id) {
     QueryServiceResult result;
     bool columns_populated = false;
     int64_t offset = 0;
 
     while (true) {
-        std::string path = "/api/v1/queries/" + job_id + "/results"
+        std::string path = "/api/v1/queries/" + job_id + "/" + statement_id + "/results"
                            "?offset=" + std::to_string(offset) +
-                           "&limit=" + std::to_string(QUERY_PAGE_SIZE);
+                           "&pageSize=" + std::to_string(QUERY_PAGE_SIZE);
 
         std::string resp;
         try {
@@ -222,10 +245,10 @@ QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id) {
                 }
             }
 
-            // Parse totalRowCount
-            yyjson_val *total_val = yyjson_obj_get(root, "totalRowCount");
+            // Parse numberOfRows
+            yyjson_val *total_val = yyjson_obj_get(root, "numberOfRows");
             if (total_val && yyjson_is_int(total_val)) {
-                result.total_rows = static_cast<int64_t>(yyjson_get_int(total_val));
+                result.total_rows = static_cast<int64_t>(yyjson_get_sint(total_val));
             } else if (total_val && yyjson_is_uint(total_val)) {
                 result.total_rows = static_cast<int64_t>(yyjson_get_uint(total_val));
             }
@@ -233,13 +256,13 @@ QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id) {
             columns_populated = true;
         }
 
-        // Parse rows
-        yyjson_val *rows = yyjson_obj_get(root, "rows");
+        // Parse data (array of arrays of strings/nulls)
+        yyjson_val *data = yyjson_obj_get(root, "data");
         int64_t page_row_count = 0;
-        if (rows && yyjson_is_arr(rows)) {
+        if (data && yyjson_is_arr(data)) {
             size_t ri, rm;
             yyjson_val *row;
-            yyjson_arr_foreach(rows, ri, rm, row) {
+            yyjson_arr_foreach(data, ri, rm, row) {
                 if (!yyjson_is_arr(row)) continue;
 
                 std::vector<std::string> row_values;
@@ -280,15 +303,15 @@ QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id) {
 
         offset += page_row_count;
 
-        // Determine if there are more pages
-        // Use totalRowCount if available, otherwise check if we got a full page
+        // Determine if there are more pages.
+        // Use numberOfRows if available, otherwise stop when page is empty.
         if (result.total_rows > 0) {
             if (offset >= result.total_rows) {
                 break;
             }
         } else {
-            // No totalRowCount — stop when we got less than a full page
-            if (page_row_count < QUERY_PAGE_SIZE) {
+            // No numberOfRows — stop when page is empty
+            if (page_row_count == 0) {
                 break;
             }
         }

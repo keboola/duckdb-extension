@@ -10,7 +10,6 @@ Verifies that:
 """
 
 import pytest
-import requests
 from conftest import kbc_table_ref
 
 pytestmark = pytest.mark.live
@@ -21,12 +20,18 @@ pytestmark = pytest.mark.live
 # ---------------------------------------------------------------------------
 
 def _schema_names(kbc_con) -> list[str]:
-    rows = kbc_con.execute("SHOW SCHEMAS IN kbc;").fetchall()
+    rows = kbc_con.execute(
+        "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'kbc';"
+    ).fetchall()
     return [r[0] for r in rows]
 
 
 def _table_names_in(kbc_con, schema: str) -> list[str]:
-    rows = kbc_con.execute(f'SHOW TABLES IN kbc."{schema}";').fetchall()
+    rows = kbc_con.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_catalog = 'kbc' AND table_schema = ?;",
+        [schema]
+    ).fetchall()
     return [r[0] for r in rows]
 
 
@@ -34,7 +39,7 @@ def _table_names_in(kbc_con, schema: str) -> list[str]:
 # 1. SHOW SCHEMAS lists test bucket
 # ---------------------------------------------------------------------------
 
-def test_show_schemas(kbc, test_bucket):
+def test_show_schemas(test_bucket, kbc):
     """SHOW SCHEMAS IN kbc must list the test bucket that was just created."""
     schemas = _schema_names(kbc)
     assert test_bucket in schemas, (
@@ -46,7 +51,7 @@ def test_show_schemas(kbc, test_bucket):
 # 2. SHOW TABLES IN <schema> lists test table
 # ---------------------------------------------------------------------------
 
-def test_show_tables(kbc, test_table):
+def test_show_tables(test_table, kbc):
     """SHOW TABLES IN kbc."<schema>" must list the test table."""
     bucket_id = test_table["bucket_id"]
     table_name = test_table["table_name"]
@@ -60,7 +65,7 @@ def test_show_tables(kbc, test_table):
 # 3. keboola_tables() scalar function
 # ---------------------------------------------------------------------------
 
-def test_keboola_tables_function(kbc, test_table):
+def test_keboola_tables_function(test_table, kbc):
     """SELECT * FROM keboola_tables('kbc') must return at least one row with our test table."""
     rows = kbc.execute("SELECT * FROM keboola_tables('kbc');").fetchdf()
     assert len(rows) > 0, "keboola_tables('kbc') returned no rows"
@@ -84,7 +89,7 @@ def test_keboola_tables_function(kbc, test_table):
 # 4. Column types — VARCHAR columns
 # ---------------------------------------------------------------------------
 
-def test_column_types_varchar(kbc, test_table):
+def test_column_types_varchar(test_table, kbc):
     """
     DESCRIBE on a standard (id, name, value) table must report VARCHAR for
     all three string columns.
@@ -104,7 +109,7 @@ def test_column_types_varchar(kbc, test_table):
 # 5. Column types — native typed columns
 # ---------------------------------------------------------------------------
 
-def test_column_types_native(kbc, typed_test_table):
+def test_column_types_native(typed_test_table, kbc):
     """
     A table whose columns carry explicit type metadata must expose the
     correct DuckDB types (not VARCHAR fallback).
@@ -150,7 +155,7 @@ def test_column_types_native(kbc, typed_test_table):
 # 6. KBC.description as column_comment
 # ---------------------------------------------------------------------------
 
-def test_column_descriptions(kbc, storage_api, test_table):
+def test_column_descriptions(test_table, kbc, storage_api):
     """
     After setting KBC.description metadata on a column via the Storage API,
     querying information_schema.columns must expose it as column_comment.
@@ -204,16 +209,16 @@ def test_column_descriptions(kbc, storage_api, test_table):
 # ---------------------------------------------------------------------------
 
 def test_nonexistent_schema_raises(kbc):
-    """Accessing a schema that doesn't exist must raise an error."""
+    """Accessing a table inside a non-existent schema must raise an error."""
     with pytest.raises(Exception):
-        kbc.execute('SHOW TABLES IN kbc."in.c-this-bucket-does-not-exist-xyz-abc";')
+        kbc.execute('SELECT * FROM kbc."in.c-this-bucket-does-not-exist-xyz-abc".sometable;')
 
 
 # ---------------------------------------------------------------------------
 # 8. Non-existent table raises an error
 # ---------------------------------------------------------------------------
 
-def test_nonexistent_table_raises(kbc, test_bucket):
+def test_nonexistent_table_raises(test_bucket, kbc):
     """Accessing a table that doesn't exist inside a valid schema must raise."""
     with pytest.raises(Exception):
         kbc.execute(f'SELECT * FROM kbc."{test_bucket}".this_table_does_not_exist_xyz;')

@@ -11,7 +11,6 @@ A plain DELETE without WHERE is guarded (raises error) to prevent accidental tru
 import io
 import csv
 import pytest
-import pandas as pd
 from conftest import kbc_table_ref
 
 pytestmark = pytest.mark.live

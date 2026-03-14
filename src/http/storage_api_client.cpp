@@ -13,6 +13,7 @@ using namespace duckdb_yyjson; // NOLINT
 #include <cstring>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <thread>
 #include <chrono>
 
@@ -192,6 +193,7 @@ KeboolaBranchInfo StorageApiClient::ResolveBranch(const std::string &branch_name
 // ---------------------------------------------------------------------------
 
 std::vector<KeboolaBucketInfo> StorageApiClient::ListBuckets() {
+    // Fetch all buckets in one call
     std::string buckets_body;
     try {
         buckets_body = http_.Get("/v2/storage/buckets");
@@ -206,6 +208,8 @@ std::vector<KeboolaBucketInfo> StorageApiClient::ListBuckets() {
     }
 
     std::vector<KeboolaBucketInfo> result;
+    // Build an index bucket_id → index into result for O(1) lookup when associating tables
+    std::unordered_map<std::string, size_t> bucket_idx;
 
     size_t bidx, bmax;
     yyjson_val *bucket_json;
@@ -215,114 +219,128 @@ std::vector<KeboolaBucketInfo> StorageApiClient::ListBuckets() {
         bucket.name        = JsonStrOr(bucket_json, "name");
         bucket.stage       = JsonStrOr(bucket_json, "stage");
         bucket.description = JsonStrOr(bucket_json, "description");
+        bucket_idx[bucket.id] = result.size();
         result.push_back(std::move(bucket));
     }
 
-    // For each bucket, fetch tables with column metadata
-    for (auto &bucket : result) {
-        std::string tables_body;
-        try {
-            tables_body = http_.Get("/v2/storage/buckets/" + bucket.id +
-                                    "/tables?include=columns,columnMetadata,metadata");
-        } catch (...) {
-            continue; // non-fatal
-        }
+    // Fetch ALL tables in ONE call (avoids N+1 per-bucket requests which is too slow
+    // for projects with many buckets, e.g. 500+ buckets → 500+ HTTP round trips).
+    std::string tables_body;
+    try {
+        tables_body = http_.Get("/v2/storage/tables?include=columns,columnMetadata,metadata");
+    } catch (const std::exception &e) {
+        // Non-fatal: return buckets without table metadata
+        return result;
+    }
 
-        auto td = ParseJson(tables_body, "list-tables-" + bucket.id);
-        yyjson_val *tables_root = yyjson_doc_get_root(td.doc);
-        if (!yyjson_is_arr(tables_root)) {
-            continue;
-        }
+    auto td = ParseJson(tables_body, "list-all-tables");
+    yyjson_val *tables_root = yyjson_doc_get_root(td.doc);
+    if (!yyjson_is_arr(tables_root)) {
+        return result;
+    }
 
-        size_t tidx, tmax;
-        yyjson_val *table_json;
-        yyjson_arr_foreach(tables_root, tidx, tmax, table_json) {
-            KeboolaTableInfo table;
-            table.id        = JsonStrOr(table_json, "id");
-            table.name      = JsonStrOr(table_json, "name");
-            table.bucket_id = bucket.id;
+    // Helper: parse one table JSON element into KeboolaTableInfo
+    auto parse_table = [&](yyjson_val *table_json) -> KeboolaTableInfo {
+        KeboolaTableInfo table;
+        table.id   = JsonStrOr(table_json, "id");
+        table.name = JsonStrOr(table_json, "name");
 
-            // Table-level metadata for description
-            yyjson_val *table_meta = yyjson_obj_get(table_json, "metadata");
-            if (table_meta && yyjson_is_arr(table_meta)) {
-                size_t mi, mm;
-                yyjson_val *meta;
-                yyjson_arr_foreach(table_meta, mi, mm, meta) {
-                    std::string mk = JsonStrOr(meta, "key");
-                    if (mk == "KBC.description") {
-                        table.description = JsonStrOr(meta, "value");
-                    }
+        // Derive bucket_id: everything before the last '.' in the table id
+        auto last_dot = table.id.rfind('.');
+        table.bucket_id = (last_dot != std::string::npos)
+                          ? table.id.substr(0, last_dot)
+                          : table.id;
+
+        // Table-level metadata for description
+        yyjson_val *table_meta = yyjson_obj_get(table_json, "metadata");
+        if (table_meta && yyjson_is_arr(table_meta)) {
+            size_t mi, mm;
+            yyjson_val *meta;
+            yyjson_arr_foreach(table_meta, mi, mm, meta) {
+                std::string mk = JsonStrOr(meta, "key");
+                if (mk == "KBC.description") {
+                    table.description = JsonStrOr(meta, "value");
                 }
             }
+        }
 
-            // Primary key
-            yyjson_val *pk = yyjson_obj_get(table_json, "primaryKey");
-            if (pk && yyjson_is_arr(pk)) {
-                size_t pi, pm;
-                yyjson_val *pv;
-                yyjson_arr_foreach(pk, pi, pm, pv) {
-                    if (yyjson_is_str(pv)) {
-                        table.primary_key.push_back(yyjson_get_str(pv));
-                    }
+        // Primary key
+        yyjson_val *pk = yyjson_obj_get(table_json, "primaryKey");
+        if (pk && yyjson_is_arr(pk)) {
+            size_t pi, pm;
+            yyjson_val *pv;
+            yyjson_arr_foreach(pk, pi, pm, pv) {
+                if (yyjson_is_str(pv)) {
+                    table.primary_key.push_back(yyjson_get_str(pv));
                 }
             }
+        }
 
-            // Columns array + columnMetadata object
-            yyjson_val *columns_arr  = yyjson_obj_get(table_json, "columns");
-            yyjson_val *col_meta_obj = yyjson_obj_get(table_json, "columnMetadata");
+        // Columns + columnMetadata
+        yyjson_val *columns_arr  = yyjson_obj_get(table_json, "columns");
+        yyjson_val *col_meta_obj = yyjson_obj_get(table_json, "columnMetadata");
 
-            if (columns_arr && yyjson_is_arr(columns_arr)) {
-                size_t ci, cm;
-                yyjson_val *col_name_val;
-                yyjson_arr_foreach(columns_arr, ci, cm, col_name_val) {
-                    if (!yyjson_is_str(col_name_val)) continue;
+        if (columns_arr && yyjson_is_arr(columns_arr)) {
+            size_t ci, cm;
+            yyjson_val *col_name_val;
+            yyjson_arr_foreach(columns_arr, ci, cm, col_name_val) {
+                if (!yyjson_is_str(col_name_val)) continue;
 
-                    KeboolaColumnInfo col;
-                    col.name = yyjson_get_str(col_name_val);
+                KeboolaColumnInfo col;
+                col.name = yyjson_get_str(col_name_val);
 
-                    std::string kbc_type;
-                    std::string basetype;
-                    int precision = 0;
-                    int scale     = 0;
+                std::string kbc_type;
+                std::string basetype;
+                int precision = 0;
+                int scale     = 0;
 
-                    if (col_meta_obj && yyjson_is_obj(col_meta_obj)) {
-                        yyjson_val *col_meta_arr = yyjson_obj_get(col_meta_obj, col.name.c_str());
-                        if (col_meta_arr && yyjson_is_arr(col_meta_arr)) {
-                            size_t cmi, cmm;
-                            yyjson_val *cm_entry;
-                            yyjson_arr_foreach(col_meta_arr, cmi, cmm, cm_entry) {
-                                std::string key   = JsonStrOr(cm_entry, "key");
-                                std::string value = JsonStrOr(cm_entry, "value");
+                if (col_meta_obj && yyjson_is_obj(col_meta_obj)) {
+                    yyjson_val *col_meta_arr = yyjson_obj_get(col_meta_obj, col.name.c_str());
+                    if (col_meta_arr && yyjson_is_arr(col_meta_arr)) {
+                        size_t cmi, cmm;
+                        yyjson_val *cm_entry;
+                        yyjson_arr_foreach(col_meta_arr, cmi, cmm, cm_entry) {
+                            std::string key   = JsonStrOr(cm_entry, "key");
+                            std::string value = JsonStrOr(cm_entry, "value");
 
-                                if (key == "KBC.datatype.type") {
-                                    kbc_type        = value;
-                                    col.keboola_type = value;
-                                } else if (key == "KBC.datatype.basetype") {
-                                    basetype = value;
-                                } else if (key == "KBC.datatype.length") {
-                                    // Format: "18,0" or "38,10"
-                                    auto comma = value.find(',');
-                                    if (comma != std::string::npos) {
-                                        try {
-                                            precision = std::stoi(value.substr(0, comma));
-                                            scale     = std::stoi(value.substr(comma + 1));
-                                        } catch (...) {}
-                                    }
-                                } else if (key == "KBC.datatype.nullable") {
-                                    col.nullable = (value != "0" && value != "false");
-                                } else if (key == "KBC.description") {
-                                    col.description = value;
+                            if (key == "KBC.datatype.type") {
+                                kbc_type         = value;
+                                col.keboola_type = value;
+                            } else if (key == "KBC.datatype.basetype") {
+                                basetype = value;
+                            } else if (key == "KBC.datatype.length") {
+                                auto comma = value.find(',');
+                                if (comma != std::string::npos) {
+                                    try {
+                                        precision = std::stoi(value.substr(0, comma));
+                                        scale     = std::stoi(value.substr(comma + 1));
+                                    } catch (...) {}
                                 }
+                            } else if (key == "KBC.datatype.nullable") {
+                                col.nullable = (value != "0" && value != "false");
+                            } else if (key == "KBC.description") {
+                                col.description = value;
                             }
                         }
                     }
-
-                    col.duckdb_type = MapKeboolaTypeToDuckDB(kbc_type, basetype, precision, scale);
-                    table.columns.push_back(std::move(col));
                 }
-            }
 
-            bucket.tables.push_back(std::move(table));
+                col.duckdb_type = MapKeboolaTypeToDuckDB(kbc_type, basetype, precision, scale);
+                table.columns.push_back(std::move(col));
+            }
+        }
+
+        return table;
+    };
+
+    // Associate tables with their buckets
+    size_t tidx, tmax;
+    yyjson_val *table_json;
+    yyjson_arr_foreach(tables_root, tidx, tmax, table_json) {
+        KeboolaTableInfo table = parse_table(table_json);
+        auto it = bucket_idx.find(table.bucket_id);
+        if (it != bucket_idx.end()) {
+            result[it->second].tables.push_back(std::move(table));
         }
     }
 
@@ -349,22 +367,14 @@ KeboolaWorkspaceInfo StorageApiClient::FindOrCreateWorkspace() {
         size_t idx, max;
         yyjson_val *ws;
         yyjson_arr_foreach(root, idx, max, ws) {
-            yyjson_val *meta = yyjson_obj_get(ws, "metadata");
-            if (meta && yyjson_is_arr(meta)) {
-                size_t mi, mm;
-                yyjson_val *m;
-                yyjson_arr_foreach(meta, mi, mm, m) {
-                    std::string key   = JsonStrOr(m, "key");
-                    std::string value = JsonStrOr(m, "value");
-                    if (key == "created_by" && value == "duckdb-extension") {
-                        KeboolaWorkspaceInfo info;
-                        info.id   = JsonIdOr(ws, "id");
-                        info.name = JsonStrOr(ws, "name");
-                        yyjson_val *conn = yyjson_obj_get(ws, "connection");
-                        info.type = JsonStrOr(conn, "backend");
-                        return info;
-                    }
-                }
+            std::string ws_name = JsonStrOr(ws, "name");
+            if (ws_name == "duckdb-extension") {
+                KeboolaWorkspaceInfo info;
+                info.id   = JsonIdOr(ws, "id");
+                info.name = ws_name;
+                yyjson_val *conn = yyjson_obj_get(ws, "connection");
+                info.type = JsonStrOr(conn, "backend");
+                return info;
             }
         }
     }
@@ -623,14 +633,84 @@ KeboolaTableInfo StorageApiClient::CreateTable(
                           bucket_id, table_name, std::string(e.what()));
     }
 
-    // Parse the response — it returns the new table object
+    // Parse the response.
+    // On newer Keboola stacks (GCP), tables-definition returns a 202 async job:
+    //   {"id": <job_id>, "status": "waiting", "tableId": "stage.c-bucket.table_name", ...}
+    // On older stacks it may return the table object directly.
     auto d = ParseJson(resp, "create-table");
     yyjson_val *root = yyjson_doc_get_root(d.doc);
 
     KeboolaTableInfo info;
-    info.id        = JsonStrOr(root, "id");
-    info.name      = JsonStrOr(root, "name");
     info.bucket_id = bucket_id;
+
+    // Detect async job by presence of "status" field.
+    // On newer Keboola stacks (GCP), tables-definition returns a 202 job response.
+    yyjson_val *status_val = yyjson_obj_get(root, "status");
+    if (status_val) {
+        // Extract job ID and poll until completion
+        std::string job_id = JsonIdOr(root, "id");
+
+        if (!job_id.empty()) {
+            static constexpr int POLL_INITIAL_MS = 100;
+            static constexpr double POLL_BACKOFF = 1.5;
+            static constexpr int POLL_MAX_MS     = 2000;
+            static constexpr int POLL_TIMEOUT_MS = 60000;
+
+            int elapsed_ms     = 0;
+            double interval_ms = static_cast<double>(POLL_INITIAL_MS);
+
+            while (elapsed_ms < POLL_TIMEOUT_MS) {
+                int sleep_ms = static_cast<int>(interval_ms);
+                std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+                elapsed_ms += sleep_ms;
+
+                std::string job_resp;
+                try {
+                    job_resp = http_.Get("/v2/storage/jobs/" + job_id);
+                } catch (const std::exception &e) {
+                    throw IOException(
+                        "Keboola CreateTable: poll failed for job %s: %s",
+                        job_id, std::string(e.what()));
+                }
+
+                auto jd = ParseJson(job_resp, "poll-create-table-job");
+                yyjson_val *jroot = yyjson_doc_get_root(jd.doc);
+                std::string jstatus = JsonStrOr(jroot, "status");
+
+                if (jstatus == "success") {
+                    break; // Table created — proceed to construct info below
+                }
+                if (jstatus == "error") {
+                    std::string err = JsonStrOr(jroot, "error");
+                    if (err.empty()) err = JsonStrOr(jroot, "message");
+                    if (err.empty()) err = "unknown error";
+                    throw IOException("Keboola CreateTable: job %s failed: %s",
+                                      job_id, err);
+                }
+
+                interval_ms *= POLL_BACKOFF;
+                if (interval_ms > static_cast<double>(POLL_MAX_MS)) {
+                    interval_ms = static_cast<double>(POLL_MAX_MS);
+                }
+            }
+        }
+
+        // Use "tableId" from the job response if available and non-empty,
+        // else construct from inputs (GCP async response may have tableId = "")
+        yyjson_val *table_id_val = yyjson_obj_get(root, "tableId");
+        const char *table_id_cstr = (table_id_val && yyjson_is_str(table_id_val))
+                                     ? yyjson_get_str(table_id_val) : nullptr;
+        if (table_id_cstr && table_id_cstr[0] != '\0') {
+            info.id = table_id_cstr;
+        } else {
+            info.id = bucket_id + "." + table_name;
+        }
+        info.name = table_name;
+    } else {
+        // Synchronous response — parse as table object
+        info.id   = JsonStrOr(root, "id");
+        info.name = JsonStrOr(root, "name");
+    }
 
     // Parse columns from the definition response
     yyjson_val *cols_arr = yyjson_obj_get(root, "columns");
@@ -732,8 +812,13 @@ KeboolaBucketInfo StorageApiClient::CreateBucket(const std::string &stage,
 // ---------------------------------------------------------------------------
 
 void StorageApiClient::DropBucket(const std::string &bucket_id) {
+    // GCP stacks require async=1; older stacks accept synchronous delete.
+    // Try async first (force+async), then fall back to sync if 4xx suggests it is not supported.
+    std::string resp;
+    bool is_async = false;
     try {
-        http_.Delete("/v2/storage/buckets/" + bucket_id);
+        resp = http_.Delete("/v2/storage/buckets/" + bucket_id + "?force=1&async=1");
+        is_async = true;
     } catch (const std::exception &e) {
         std::string msg(e.what());
         if (msg.find("HTTP error 404") != std::string::npos ||
@@ -741,9 +826,66 @@ void StorageApiClient::DropBucket(const std::string &bucket_id) {
             throw CatalogException("Schema (bucket) with id \"%s\" not found in Keboola",
                                    bucket_id);
         }
+        // If async is not supported, fall back to synchronous delete
+        if (msg.find("HTTP error 4") != std::string::npos) {
+            try {
+                http_.Delete("/v2/storage/buckets/" + bucket_id);
+                return; // sync delete succeeded
+            } catch (const std::exception &e2) {
+                throw IOException("Keboola Storage API DropBucket failed for bucket '%s': %s",
+                                  bucket_id, std::string(e2.what()));
+            }
+        }
         throw IOException("Keboola Storage API DropBucket failed for bucket '%s': %s",
                           bucket_id, msg);
     }
+
+    if (!is_async || resp.empty()) return;
+
+    // Poll the async job to completion
+    auto d = ParseJson(resp, "drop-bucket-job");
+    yyjson_val *root = yyjson_doc_get_root(d.doc);
+    std::string job_id = JsonIdOr(root, "id");
+    if (job_id.empty()) return;
+
+    static constexpr int POLL_INITIAL_MS = 100;
+    static constexpr double POLL_BACKOFF = 1.5;
+    static constexpr int POLL_MAX_MS     = 2000;
+    static constexpr int POLL_TIMEOUT_MS = 60000;
+
+    int elapsed_ms     = 0;
+    double interval_ms = static_cast<double>(POLL_INITIAL_MS);
+
+    while (elapsed_ms < POLL_TIMEOUT_MS) {
+        int sleep_ms = static_cast<int>(interval_ms);
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+        elapsed_ms += sleep_ms;
+
+        std::string job_resp;
+        try {
+            job_resp = http_.Get("/v2/storage/jobs/" + job_id);
+        } catch (const std::exception &e) {
+            throw IOException("Keboola DropBucket: poll failed for job %s: %s",
+                              job_id, std::string(e.what()));
+        }
+
+        auto jd = ParseJson(job_resp, "poll-drop-bucket-job");
+        yyjson_val *jroot = yyjson_doc_get_root(jd.doc);
+        std::string jstatus = JsonStrOr(jroot, "status");
+        if (jstatus == "success") return;
+        if (jstatus == "error") {
+            std::string err = JsonStrOr(jroot, "error");
+            if (err.empty()) err = JsonStrOr(jroot, "message");
+            if (err.empty()) err = "unknown error";
+            throw IOException("Keboola DropBucket: job %s failed: %s", job_id, err);
+        }
+        interval_ms *= POLL_BACKOFF;
+        if (interval_ms > static_cast<double>(POLL_MAX_MS)) {
+            interval_ms = static_cast<double>(POLL_MAX_MS);
+        }
+    }
+    throw IOException("Keboola DropBucket: job %s did not complete within %d seconds",
+                      job_id, POLL_TIMEOUT_MS / 1000);
 }
 
 } // namespace duckdb

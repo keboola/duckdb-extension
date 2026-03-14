@@ -51,7 +51,7 @@ def _insert_null_and_fetch(kbc_con, ref: str, row_id: str, col: str) -> object:
 # VARCHAR
 # ---------------------------------------------------------------------------
 
-def test_type_varchar(kbc, test_table):
+def test_type_varchar(test_table, kbc):
     """VARCHAR round-trip: str → VARCHAR → str."""
     ref = kbc_table_ref(test_table["table_id"])
     val = _insert_and_fetch(kbc, ref, "type_varchar", "name", "hello world")
@@ -59,7 +59,7 @@ def test_type_varchar(kbc, test_table):
     assert val == "hello world"
 
 
-def test_type_varchar_unicode(kbc, test_table):
+def test_type_varchar_unicode(test_table, kbc):
     """VARCHAR handles unicode characters correctly."""
     ref = kbc_table_ref(test_table["table_id"])
     unicode_val = "こんにちは 🎉 Ñoño"
@@ -71,14 +71,14 @@ def test_type_varchar_unicode(kbc, test_table):
 # BIGINT
 # ---------------------------------------------------------------------------
 
-def test_type_bigint(kbc, typed_test_table):
+def test_type_bigint(typed_test_table, kbc):
     """BIGINT round-trip: int → BIGINT → int (or numpy int64)."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     val = _insert_and_fetch(kbc, ref, "type_bigint", "col_bigint", 9_007_199_254_740_993)
     assert int(val) == 9_007_199_254_740_993, f"BIGINT round-trip failed: got {val!r}"
 
 
-def test_type_bigint_negative(kbc, typed_test_table):
+def test_type_bigint_negative(typed_test_table, kbc):
     """BIGINT handles negative values."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     val = _insert_and_fetch(kbc, ref, "type_bigint_neg", "col_bigint", -42_000_000_000)
@@ -89,7 +89,7 @@ def test_type_bigint_negative(kbc, typed_test_table):
 # DECIMAL (via VARCHAR column + CAST)
 # ---------------------------------------------------------------------------
 
-def test_type_decimal(kbc, test_table):
+def test_type_decimal(test_table, kbc):
     """
     DECIMAL round-trip via a typed column or explicit CAST.
     Using the standard test_table (VARCHAR) and CAST to verify numeric accuracy.
@@ -109,7 +109,7 @@ def test_type_decimal(kbc, test_table):
 # DOUBLE
 # ---------------------------------------------------------------------------
 
-def test_type_double(kbc, typed_test_table):
+def test_type_double(typed_test_table, kbc):
     """DOUBLE round-trip: float → DOUBLE → float."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     val = _insert_and_fetch(kbc, ref, "type_double", "col_double", 3.141592653589793)
@@ -119,7 +119,7 @@ def test_type_double(kbc, typed_test_table):
     )
 
 
-def test_type_double_negative(kbc, typed_test_table):
+def test_type_double_negative(typed_test_table, kbc):
     """DOUBLE handles negative float values."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     val = _insert_and_fetch(kbc, ref, "type_double_neg", "col_double", -0.000123456789)
@@ -130,14 +130,14 @@ def test_type_double_negative(kbc, typed_test_table):
 # BOOLEAN
 # ---------------------------------------------------------------------------
 
-def test_type_boolean_true(kbc, typed_test_table):
+def test_type_boolean_true(typed_test_table, kbc):
     """BOOLEAN True round-trip."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     val = _insert_and_fetch(kbc, ref, "type_bool_t", "col_boolean", True)
     assert bool(val) is True, f"Expected True, got {val!r}"
 
 
-def test_type_boolean_false(kbc, typed_test_table):
+def test_type_boolean_false(typed_test_table, kbc):
     """BOOLEAN False round-trip."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     val = _insert_and_fetch(kbc, ref, "type_bool_f", "col_boolean", False)
@@ -148,7 +148,7 @@ def test_type_boolean_false(kbc, typed_test_table):
 # DATE
 # ---------------------------------------------------------------------------
 
-def test_type_date(kbc, typed_test_table):
+def test_type_date(typed_test_table, kbc):
     """DATE round-trip: date → DATE → datetime.date."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     expected = datetime.date(2024, 6, 15)
@@ -159,7 +159,7 @@ def test_type_date(kbc, typed_test_table):
     assert val == expected, f"DATE round-trip failed: got {val!r}"
 
 
-def test_type_date_epoch(kbc, typed_test_table):
+def test_type_date_epoch(typed_test_table, kbc):
     """DATE handles Unix epoch boundary (1970-01-01)."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     expected = datetime.date(1970, 1, 1)
@@ -173,7 +173,7 @@ def test_type_date_epoch(kbc, typed_test_table):
 # TIMESTAMP
 # ---------------------------------------------------------------------------
 
-def test_type_timestamp(kbc, typed_test_table):
+def test_type_timestamp(typed_test_table, kbc):
     """TIMESTAMP round-trip: datetime → TIMESTAMP → datetime.datetime."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     expected = datetime.datetime(2024, 3, 14, 9, 26, 53, 0)  # microseconds=0 for portability
@@ -185,7 +185,7 @@ def test_type_timestamp(kbc, typed_test_table):
     assert val == expected, f"TIMESTAMP round-trip failed: got {val!r}"
 
 
-def test_type_timestamp_microsecond(kbc, typed_test_table):
+def test_type_timestamp_microsecond(typed_test_table, kbc):
     """TIMESTAMP preserves microsecond precision."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     expected = datetime.datetime(2025, 12, 31, 23, 59, 59, 123456)
@@ -207,7 +207,7 @@ def test_type_timestamp_microsecond(kbc, typed_test_table):
     ("col_date",      "null_date"),
     ("col_timestamp", "null_timestamp"),
 ])
-def test_type_null_each_type(kbc, typed_test_table, col, row_id):
+def test_type_null_each_type(typed_test_table, kbc, col, row_id):
     """NULL must be stored and retrieved as NULL (not 0, False, empty string, etc.)."""
     ref = kbc_table_ref(typed_test_table["table_id"])
     val = _insert_null_and_fetch(kbc, ref, row_id, col)
@@ -216,7 +216,7 @@ def test_type_null_each_type(kbc, typed_test_table, col, row_id):
     )
 
 
-def test_type_null_varchar(kbc, test_table):
+def test_type_null_varchar(test_table, kbc):
     """NULL in a plain VARCHAR column round-trips as NULL."""
     ref = kbc_table_ref(test_table["table_id"])
     val = _insert_null_and_fetch(kbc, ref, "null_vc", "name")
@@ -227,7 +227,7 @@ def test_type_null_varchar(kbc, test_table):
 # Empty string vs NULL distinction
 # ---------------------------------------------------------------------------
 
-def test_empty_string_is_not_null(kbc, test_table):
+def test_empty_string_is_not_null(test_table, kbc):
     """Empty string '' must be stored as '' and NOT converted to NULL."""
     ref = kbc_table_ref(test_table["table_id"])
     _insert_and_fetch(kbc, ref, "empty_str", "name", "")

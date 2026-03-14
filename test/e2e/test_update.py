@@ -145,7 +145,7 @@ def test_update_nonexistent_row(kbc, seeded_table):
 # 6. Table without PK raises descriptive error
 # ---------------------------------------------------------------------------
 
-def test_update_no_pk_fails(kbc, storage_api, test_bucket, test_prefix):
+def test_update_no_pk_fails(test_bucket, kbc, storage_api, test_prefix):
     """UPDATE on a table without a primary key must raise a descriptive error."""
     # Create a table without PK
     table_name = f"{test_prefix}nopk"

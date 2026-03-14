@@ -153,9 +153,21 @@ class KeboolaStorageApi:
         })
 
     def delete_bucket(self, bucket_id: str, force: bool = True):
-        """Delete a bucket (optionally force-deleting its tables first)."""
+        """Delete a bucket (optionally force-deleting its tables first).
+        Uses async deletion (required on GCP stacks) with job polling.
+        """
         try:
-            self.delete(f"/buckets/{bucket_id}", params={"force": int(force)})
+            r = self.session.delete(
+                f"{self.base_url}/v2/storage{f'/buckets/{bucket_id}'}",
+                params={"force": int(force), "async": 1},
+            )
+            if r.status_code == 404:
+                return  # already gone
+            r.raise_for_status()
+            resp = r.json()
+            # If async job returned, wait for it
+            if isinstance(resp, dict) and "status" in resp and "id" in resp:
+                self.wait_for_job(str(resp["id"]))
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code == 404:
                 return  # already gone
@@ -170,7 +182,17 @@ class KeboolaStorageApi:
         }
         if primary_key:
             payload["primaryKeysNames"] = primary_key
-        return self.post(f"/buckets/{bucket_id}/tables-definition", json=payload)
+        resp = self.post(f"/buckets/{bucket_id}/tables-definition", json=payload)
+        # On newer Keboola stacks (GCP), tables-definition is async (returns a job).
+        # Normalise to a table-like dict so callers always see {"id": "<table_id>", ...}.
+        if isinstance(resp, dict) and "status" in resp:
+            job_id = str(resp.get("id", ""))
+            if job_id:
+                self.wait_for_job(job_id)
+            table_id = resp.get("tableId") or f"{bucket_id}.{table_name}"
+            return {"id": table_id, "name": table_name, "bucket_id": bucket_id}
+        # Synchronous response — direct table object
+        return resp
 
     def delete_table(self, table_id: str):
         """Delete a table, ignoring 404."""
@@ -209,9 +231,10 @@ def test_bucket(storage_api, test_prefix):
     Creates `in.c-duckdbtest-{short_id}` bucket via the Storage API,
     yields the bucket id (e.g. 'in.c-duckdbtest-abc123'), and deletes
     it in teardown even if the test fails.
+    Note: Storage API adds the 'c-' prefix automatically; we only pass the suffix.
     """
-    # Bucket names follow 'c-<name>' convention; Storage API prefixes stage
-    bucket_name = f"c-duckdbtest-{test_prefix.replace('_', '-').rstrip('-')}"
+    # Storage API adds 'c-' prefix automatically — do NOT include it manually
+    bucket_name = f"duckdbtest-{test_prefix.replace('_', '-').rstrip('-')}"
     bucket_info = storage_api.create_bucket("in", bucket_name, description="DuckDB E2E test bucket")
     bucket_id = bucket_info["id"]  # e.g. "in.c-duckdbtest-..."
     try:
@@ -281,7 +304,6 @@ def typed_test_table(storage_api, test_bucket, test_prefix):
         "columns": TYPED_COLUMNS,
         "primaryKeysNames": ["id"],
     }
-    import requests as req_lib
     base_url = storage_api.base_url
     r = storage_api.session.post(
         f"{base_url}/v2/storage/buckets/{test_bucket}/tables-definition",
@@ -289,7 +311,14 @@ def typed_test_table(storage_api, test_bucket, test_prefix):
     )
     r.raise_for_status()
     table_info = r.json()
-    table_id = table_info["id"]
+    # Handle async job response (GCP stacks)
+    if isinstance(table_info, dict) and "status" in table_info:
+        job_id = str(table_info.get("id", ""))
+        if job_id:
+            storage_api.wait_for_job(job_id)
+        table_id = table_info.get("tableId") or f"{test_bucket}.{table_name}"
+    else:
+        table_id = table_info["id"]
     info = {
         "bucket_id": test_bucket,
         "table_id": table_id,

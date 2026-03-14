@@ -9,8 +9,6 @@ name: E2E Tests (Live)
 
 on:
   push:
-    branches:
-      - main
 
   workflow_dispatch:
     inputs:
@@ -63,7 +61,7 @@ jobs:
           version: "latest"
 
       - name: Install Python test dependencies
-        run: uv sync --extra test
+        run: uv sync
         working-directory: test/e2e
 
       # -----------------------------------------------------------------------
@@ -77,17 +75,18 @@ jobs:
           fi
 
       - name: Run E2E pytest suite
+        working-directory: test/e2e
         run: |
-          uv run pytest test/e2e/ \
+          uv run pytest . \
             -m live \
             --timeout=120 \
             -v \
             --tb=short \
-            --junitxml=test-results/e2e.xml
+            --junitxml=${{ github.workspace }}/test-results/e2e.xml
         env:
           KEBOOLA_TOKEN: ${{ env.KEBOOLA_TOKEN }}
           KEBOOLA_URL: ${{ env.KEBOOLA_URL }}
-          DUCKDB_EXT_PATH: ${{ github.workspace }}/build/release/extension/keboola/keboola.duckdb_extension
+          KEBOOLA_EXTENSION_PATH: ${{ github.workspace }}/build/release/extension/keboola/keboola.duckdb_extension
 
       # -----------------------------------------------------------------------
       # Upload results

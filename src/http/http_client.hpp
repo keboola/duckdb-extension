@@ -65,8 +65,8 @@ private:
         httplib::Client cli(base_url_.c_str());
         cli.set_follow_location(true);
         cli.set_connection_timeout(30);
-        cli.set_read_timeout(60);
-        cli.set_write_timeout(30);
+        cli.set_read_timeout(120);  // large bulk responses (e.g. 5000+ tables) may need more time
+        cli.set_write_timeout(60);
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         // Accept the server's certificate (Keboola uses a valid public CA)
         cli.enable_server_certificate_verification(true);

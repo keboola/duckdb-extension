@@ -12,7 +12,6 @@ Covers:
 """
 
 import pytest
-import requests as req_lib
 from conftest import KeboolaStorageApi
 
 
@@ -73,11 +72,10 @@ def test_attach_with_secret(duckdb_con, keboola_token, keboola_url):
 # 3. READ_ONLY
 # ---------------------------------------------------------------------------
 
-def test_attach_read_only(duckdb_con, keboola_token, keboola_url, test_bucket):
+def test_attach_read_only(duckdb_con, keboola_token, keboola_url, test_table):
     """ATTACH READ_ONLY should attach successfully but reject INSERT statements."""
-    # test_bucket is the bucket id e.g. "in.c-duckdbtest-..."
-    # We just need any schema reference — the bucket from the fixture is fine
-    schema = test_bucket  # "in.c-duckdbtest-..."
+    bucket_id = test_table["bucket_id"]
+    table_name = test_table["table_name"]
 
     duckdb_con.execute(f"""
         ATTACH '{keboola_url}' AS kbc_ro (
@@ -87,16 +85,14 @@ def test_attach_read_only(duckdb_con, keboola_token, keboola_url, test_bucket):
         )
     """)
     try:
-        # The attach itself must succeed
         rows = duckdb_con.execute(
             "SELECT database_name FROM duckdb_databases() WHERE database_name = 'kbc_ro'"
         ).fetchall()
         assert len(rows) == 1, "kbc_ro must appear in duckdb_databases()"
 
-        # Any INSERT must be refused
         with pytest.raises(Exception, match=r"(?i)read.?only"):
             duckdb_con.execute(
-                f'INSERT INTO kbc_ro."{schema}".nonexistent_table VALUES (\'a\', \'b\', \'c\')'
+                f'INSERT INTO kbc_ro."{bucket_id}".{table_name} VALUES (\'a\', \'b\', \'c\')'
             )
     finally:
         try:

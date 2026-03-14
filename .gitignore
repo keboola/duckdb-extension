@@ -45,3 +45,4 @@ venv/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+local_test/
