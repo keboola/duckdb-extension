@@ -84,14 +84,14 @@ jobs:
         working-directory: test/e2e
 
       - name: Run E2E pytest suite
+        working-directory: test/e2e
         run: |
-          EXT_PATH=$(find artifacts/ -name "keboola.duckdb_extension" | head -1)
-          uv run pytest test/e2e/ \
+          uv run pytest . \
             -m live \
             --timeout=120 \
             -v \
             --tb=short \
-            --junitxml=test-results/e2e-gate.xml
+            --junitxml=${{ github.workspace }}/test-results/e2e-gate.xml
         env:
           KEBOOLA_TOKEN: ${{ env.KEBOOLA_TOKEN }}
           KEBOOLA_URL: ${{ env.KEBOOLA_URL }}
