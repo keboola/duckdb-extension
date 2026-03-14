@@ -1,6 +1,7 @@
 #include "keboola_schema.hpp"
 #include "keboola_table.hpp"
 #include "http/query_service_client.hpp"
+#include "util/sql_generator.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -256,10 +257,9 @@ void KeboolaSchemaEntry::PullTable(ClientContext & /*context*/, const std::strin
     KeboolaTableEntry &entry = *it->second;
     const KeboolaTableInfo &tbl_info = entry.GetKeboolaTableInfo();
 
-    // Build SELECT * SQL
-    // Use fully-qualified name: "bucket_id"."table_name"
-    // The Query Service expects DuckDB-style identifier quoting
-    std::string sql = "SELECT * FROM \"" + tbl_info.id + "\"";
+    // Build SELECT * SQL using the same quoting as the normal scan path:
+    // splits table_id on the last dot → "schema"."table"
+    std::string sql = KeboolaSqlGenerator::BuildSelectSql(tbl_info.id, {}, nullptr, -1);
 
     QueryServiceClient qsc(
         connection_->service_urls.query_url,
@@ -281,7 +281,12 @@ void KeboolaSchemaEntry::PullTable(ClientContext & /*context*/, const std::strin
 
 void KeboolaSchemaEntry::PullAllTables(ClientContext &context) {
     for (auto &kv : tables_) {
-        PullTable(context, kv.second->GetKeboolaTableInfo().name);
+        try {
+            PullTable(context, kv.second->GetKeboolaTableInfo().name);
+        } catch (const std::exception &) {
+            // Skip tables that fail to pull; they remain in live (non-snapshot) mode.
+            // This prevents a single inaccessible table from aborting ATTACH SNAPSHOT.
+        }
     }
 }
 

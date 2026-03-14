@@ -74,10 +74,12 @@ def kbc(duckdb_con, keboola_token, keboola_url):
     Attaches Keboola as 'kbc' in the duckdb_con, yields the connection,
     and detaches in teardown even on test failure.
     """
+    # READ_WRITE is required: DuckDB auto-sets HTTPS URLs to READ_ONLY by default.
     duckdb_con.execute(f"""
         ATTACH '{keboola_url}' AS kbc (
             TYPE keboola,
-            TOKEN '{keboola_token}'
+            TOKEN '{keboola_token}',
+            READ_WRITE
         )
     """)
     try:
