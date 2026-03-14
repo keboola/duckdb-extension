@@ -50,7 +50,7 @@ jobs:
       - name: Download linux_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: linux_amd64-v1.5.0
+          name: keboola-v1.5.0-extension-linux_amd64
           path: artifacts/
 
       - name: Make extension executable
@@ -102,7 +102,7 @@ jobs:
       - name: Download linux_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: linux_amd64-v1.5.0
+          name: keboola-v1.5.0-extension-linux_amd64
           path: artifacts/
 
       - name: Check credentials are available
@@ -170,7 +170,7 @@ jobs:
       - name: Download all stable build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: "*-v1.5.0"
+          pattern: "keboola-v1.5.0-extension-*"
           path: artifacts/stable/
           merge-multiple: false
 
@@ -212,4 +212,4 @@ jobs:
             See the [README](https://github.com/${{ github.repository }}/blob/main/README.md) for usage instructions.
           generate_release_notes: true
           files: |
-            artifacts/stable/**/*.duckdb_extension
+            artifacts/stable/**/*

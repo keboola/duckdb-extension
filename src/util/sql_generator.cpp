@@ -5,7 +5,7 @@
 #include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
-#include "duckdb/planner/table_filter.hpp"
+// TableFilterSet include is handled in the header (table_filter_set.hpp vs table_filter.hpp)
 
 #include <sstream>
 #include <string>
@@ -202,24 +202,19 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
     sql << EscapeIdentifier(table_part);
 
     // WHERE clause from pushed-down filters
-    if (filters && !filters->filters.empty()) {
+    // DuckDB main (KEBOOLA_DUCKDB_NEW_FILTER_API=1): filters map is private;
+    //   iterate via begin()/end() — entry.ColumnIndex() returns idx_t, entry.Filter() returns TableFilter&
+    // DuckDB v1.5.0 (KEBOOLA_DUCKDB_NEW_FILTER_API=0): filters map is public as map<idx_t, unique_ptr<TableFilter>>
+#if KEBOOLA_DUCKDB_NEW_FILTER_API
+    if (filters && filters->HasFilters()) {
         std::vector<std::string> conditions;
-        for (const auto &kv : filters->filters) {
-            idx_t col_idx = kv.first;
-            const TableFilter &tf = *kv.second;
-
-            // We need the column name for this index.
-            // The filters map key is the column index in the projected columns list.
-            // If columns is empty (SELECT *), we cannot resolve the name — skip.
-            if (columns.empty()) continue;
-            if (col_idx >= columns.size()) continue;
-
+        for (const auto &entry : *filters) {
+            idx_t col_idx = entry.ColumnIndex();
+            const TableFilter &tf = entry.Filter();
+            if (columns.empty() || col_idx >= columns.size()) continue;
             std::string cond = FilterToSql(columns[col_idx], tf);
-            if (!cond.empty()) {
-                conditions.push_back(cond);
-            }
+            if (!cond.empty()) conditions.push_back(cond);
         }
-
         if (!conditions.empty()) {
             sql << " WHERE ";
             for (size_t i = 0; i < conditions.size(); i++) {
@@ -228,6 +223,25 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
             }
         }
     }
+#else
+    if (filters && !filters->filters.empty()) {
+        std::vector<std::string> conditions;
+        for (const auto &kv : filters->filters) {
+            idx_t col_idx = kv.first;
+            const TableFilter &tf = *kv.second;
+            if (columns.empty() || col_idx >= columns.size()) continue;
+            std::string cond = FilterToSql(columns[col_idx], tf);
+            if (!cond.empty()) conditions.push_back(cond);
+        }
+        if (!conditions.empty()) {
+            sql << " WHERE ";
+            for (size_t i = 0; i < conditions.size(); i++) {
+                if (i > 0) sql << " AND ";
+                sql << "(" << conditions[i] << ")";
+            }
+        }
+    }
+#endif
 
     // LIMIT clause
     if (limit > 0) {

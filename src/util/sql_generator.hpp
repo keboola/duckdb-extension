@@ -1,10 +1,20 @@
 #pragma once
 
+// DuckDB main moved TableFilterSet to its own header (table_filter_set.hpp)
+// and made the `filters` map private with a new iterator API.
+// DuckDB v1.5.0 still has TableFilterSet in table_filter.hpp with a public map.
+#if __has_include("duckdb/planner/table_filter_set.hpp")
+#include "duckdb/planner/table_filter_set.hpp"   // DuckDB main
+#define KEBOOLA_DUCKDB_NEW_FILTER_API 1
+#else
+#include "duckdb/planner/table_filter.hpp"        // DuckDB v1.5.0
+#define KEBOOLA_DUCKDB_NEW_FILTER_API 0
+#endif
+
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
-#include "duckdb/planner/table_filter.hpp"
 
 #include <string>
 #include <vector>
