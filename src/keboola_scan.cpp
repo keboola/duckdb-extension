@@ -218,8 +218,15 @@ static std::vector<idx_t> FilterSnapshotRows(
         const auto *row_nulls = (row_idx < null_mask.size()) ? &null_mask[row_idx] : nullptr;
 
         bool passes = true;
+#if KEBOOLA_DUCKDB_NEW_FILTER_API
+        for (const auto &entry : filters) {
+            idx_t filter_col = entry.ColumnIndex();
+            const TableFilter &tf = entry.Filter();
+#else
         for (const auto &flt_kv : filters.filters) {
             idx_t filter_col = flt_kv.first;
+            const TableFilter &tf = *flt_kv.second;
+#endif
 
             int dc = (filter_col < data_col_map.size()) ? data_col_map[filter_col]
                                                         : static_cast<int>(filter_col);
@@ -241,7 +248,7 @@ static std::vector<idx_t> FilterSnapshotRows(
                                            ? col_types[filter_col]
                                            : LogicalType::VARCHAR;
 
-            if (!EvaluateTableFilter(*flt_kv.second, is_null, cell, ltype)) {
+            if (!EvaluateTableFilter(tf, is_null, cell, ltype)) {
                 passes = false;
                 break;
             }
@@ -343,7 +350,11 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
                                                            : std::vector<std::vector<bool>>{};
         const TableFilterSet *filters = input.filters.get();
 
+#if KEBOOLA_DUCKDB_NEW_FILTER_API
+        if (filters && filters->HasFilters()) {
+#else
         if (filters && !filters->filters.empty()) {
+#endif
             // Evaluate filters and collect passing row indices.
             auto passing = FilterSnapshotRows(*filters, src_rows, src_mask,
                                               gstate->data_col_map, gstate->column_types);
