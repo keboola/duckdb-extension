@@ -118,21 +118,24 @@ class KeboolaStorageApi:
         })
 
     def get(self, path: str, **kwargs):
+        kwargs.setdefault("timeout", 30)
         r = self.session.get(f"{self.base_url}/v2/storage{path}", **kwargs)
         r.raise_for_status()
         return r.json()
 
     def post(self, path: str, data=None, json=None, **kwargs):
+        kwargs.setdefault("timeout", 30)
         r = self.session.post(f"{self.base_url}/v2/storage{path}", data=data, json=json, **kwargs)
         r.raise_for_status()
         return r.json()
 
     def delete(self, path: str, **kwargs):
+        kwargs.setdefault("timeout", 30)
         r = self.session.delete(f"{self.base_url}/v2/storage{path}", **kwargs)
         r.raise_for_status()
         return r
 
-    def wait_for_job(self, job_id: str, timeout: int = 120, poll_interval: float = 1.0):
+    def wait_for_job(self, job_id: str, timeout: int = 300, poll_interval: float = 2.0):
         """Poll a Storage API async job until it finishes or times out."""
         deadline = time.time() + timeout
         while time.time() < deadline:

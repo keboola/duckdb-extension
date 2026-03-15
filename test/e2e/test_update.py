@@ -14,7 +14,7 @@ import pytest
 import pandas as pd
 from conftest import kbc_table_ref
 
-pytestmark = pytest.mark.live
+pytestmark = [pytest.mark.live, pytest.mark.timeout(300)]
 
 
 # ---------------------------------------------------------------------------
