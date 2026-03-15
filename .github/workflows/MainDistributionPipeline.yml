@@ -35,34 +35,6 @@ jobs:
       enable_rust: false
 
   # ---------------------------------------------------------------------------
-  # Fast linux_amd64 build for E2E — every push
-  # ---------------------------------------------------------------------------
-  build-linux:
-    name: Build linux_amd64
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build libssl-dev pkg-config unzip curl
-
-      - name: Build extension
-        run: make release
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: keboola-linux_amd64
-          path: build/release/extension/keboola/keboola.duckdb_extension
-          retention-days: 3
-
-  # ---------------------------------------------------------------------------
   # E2E live tests — every push
   #
   # Runs identically to local: no -n (sequential), no --timeout override.
