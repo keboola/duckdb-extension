@@ -227,15 +227,10 @@ SinkFinalizeType KeboolaUpdate::Finalize(Pipeline & /*pipeline*/,
         for (idx_t ci = 0; ci < row.size(); ci++) {
             bool is_null = (row_nulls && ci < row_nulls->size() && (*row_nulls)[ci]);
             if (is_null) {
-                // VARCHAR (TEXT) NULLs require the sentinel so NULL is distinguishable
-                // from an empty string in Keboola's string-typed CSV storage.
-                // For other types the sentinel is also safe: on read-back StringToValue()
-                // fails to parse it as a number/date and returns NULL via the catch path.
-                bool is_text = (ci < result.columns.size() &&
-                                (result.columns[ci].type == "TEXT" ||
-                                 result.columns[ci].type == "STRING" ||
-                                 result.columns[ci].type == "VARCHAR"));
-                csv_row.push_back(is_text ? kNullSentinel : "");
+                // Use the NULL sentinel so the scanner converts this back to SQL NULL.
+                // The sentinel is safe for all column types: keboola_scan.cpp checks for
+                // it before any type-specific parsing and returns NULL.
+                csv_row.push_back(kNullSentinel);
             } else {
                 csv_row.push_back(row[ci]);
             }
