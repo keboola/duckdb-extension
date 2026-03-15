@@ -411,9 +411,52 @@ KeboolaWorkspaceInfo StorageApiClient::FindOrCreateWorkspace() {
 void StorageApiClient::DeleteWorkspace(const std::string &workspace_id) {
     if (workspace_id.empty()) return;
     try {
-        http_.Delete("/v2/storage/workspaces/" + workspace_id);
+        std::string resp = http_.Delete("/v2/storage/workspaces/" + workspace_id);
+
+        // GCP stacks return an async job object; poll it to completion so the
+        // workspace is fully deleted before the caller checks.
+        if (resp.empty()) return;
+
+        yyjson_read_err err;
+        yyjson_doc *raw = yyjson_read_opts(const_cast<char *>(resp.c_str()),
+                                           resp.size(), YYJSON_READ_NOFLAG,
+                                           nullptr, &err);
+        if (!raw) return;
+        YyjsonDoc d(raw);
+        yyjson_val *root = yyjson_doc_get_root(d.doc);
+
+        std::string job_id = JsonIdOr(root, "id");
+        if (job_id.empty()) return;
+
+        // Verify it looks like a job (has "status" field)
+        std::string status = JsonStrOr(root, "status");
+        if (status.empty()) return;
+
+        // Poll the job until done (best-effort — cap at 30 seconds)
+        static constexpr int POLL_TIMEOUT_MS = 30000;
+        int elapsed_ms = 0;
+        double interval_ms = 200.0;
+
+        while (elapsed_ms < POLL_TIMEOUT_MS) {
+            int sleep_ms = static_cast<int>(interval_ms);
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+            elapsed_ms += sleep_ms;
+
+            std::string job_resp = http_.Get("/v2/storage/jobs/" + job_id);
+            yyjson_read_err jerr;
+            yyjson_doc *jraw = yyjson_read_opts(const_cast<char *>(job_resp.c_str()),
+                                                job_resp.size(), YYJSON_READ_NOFLAG,
+                                                nullptr, &jerr);
+            if (!jraw) break;
+            YyjsonDoc jd(jraw);
+            yyjson_val *jroot = yyjson_doc_get_root(jd.doc);
+            std::string jstatus = JsonStrOr(jroot, "status");
+            if (jstatus == "success" || jstatus == "error") break;
+
+            interval_ms = std::min(interval_ms * 1.5, 2000.0);
+        }
     } catch (...) {
-        // Best-effort cleanup — swallow errors
+        // Best-effort cleanup — swallow errors so DETACH never fails
     }
 }
 
