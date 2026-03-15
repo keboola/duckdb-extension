@@ -189,6 +189,103 @@ KeboolaBranchInfo StorageApiClient::ResolveBranch(const std::string &branch_name
 }
 
 // ---------------------------------------------------------------------------
+// ParseTableJsonElement — shared by ListBuckets and FetchBucketTables
+// ---------------------------------------------------------------------------
+
+static KeboolaTableInfo ParseTableJsonElement(yyjson_val *table_json) {
+    KeboolaTableInfo table;
+    table.id   = JsonStrOr(table_json, "id");
+    table.name = JsonStrOr(table_json, "name");
+
+    // Derive bucket_id: everything before the last '.' in the table id
+    auto last_dot = table.id.rfind('.');
+    table.bucket_id = (last_dot != std::string::npos)
+                      ? table.id.substr(0, last_dot)
+                      : table.id;
+
+    // Table-level metadata for description
+    yyjson_val *table_meta = yyjson_obj_get(table_json, "metadata");
+    if (table_meta && yyjson_is_arr(table_meta)) {
+        size_t mi, mm;
+        yyjson_val *meta;
+        yyjson_arr_foreach(table_meta, mi, mm, meta) {
+            std::string mk = JsonStrOr(meta, "key");
+            if (mk == "KBC.description") {
+                table.description = JsonStrOr(meta, "value");
+            }
+        }
+    }
+
+    // Primary key
+    yyjson_val *pk = yyjson_obj_get(table_json, "primaryKey");
+    if (pk && yyjson_is_arr(pk)) {
+        size_t pi, pm;
+        yyjson_val *pv;
+        yyjson_arr_foreach(pk, pi, pm, pv) {
+            if (yyjson_is_str(pv)) {
+                table.primary_key.push_back(yyjson_get_str(pv));
+            }
+        }
+    }
+
+    // Columns + columnMetadata
+    yyjson_val *columns_arr  = yyjson_obj_get(table_json, "columns");
+    yyjson_val *col_meta_obj = yyjson_obj_get(table_json, "columnMetadata");
+
+    if (columns_arr && yyjson_is_arr(columns_arr)) {
+        size_t ci, cm;
+        yyjson_val *col_name_val;
+        yyjson_arr_foreach(columns_arr, ci, cm, col_name_val) {
+            if (!yyjson_is_str(col_name_val)) continue;
+
+            KeboolaColumnInfo col;
+            col.name = yyjson_get_str(col_name_val);
+
+            std::string kbc_type;
+            std::string basetype;
+            int precision = 0;
+            int scale     = 0;
+
+            if (col_meta_obj && yyjson_is_obj(col_meta_obj)) {
+                yyjson_val *col_meta_arr = yyjson_obj_get(col_meta_obj, col.name.c_str());
+                if (col_meta_arr && yyjson_is_arr(col_meta_arr)) {
+                    size_t cmi, cmm;
+                    yyjson_val *cm_entry;
+                    yyjson_arr_foreach(col_meta_arr, cmi, cmm, cm_entry) {
+                        std::string key   = JsonStrOr(cm_entry, "key");
+                        std::string value = JsonStrOr(cm_entry, "value");
+
+                        if (key == "KBC.datatype.type") {
+                            kbc_type         = value;
+                            col.keboola_type = value;
+                        } else if (key == "KBC.datatype.basetype") {
+                            basetype = value;
+                        } else if (key == "KBC.datatype.length") {
+                            auto comma = value.find(',');
+                            if (comma != std::string::npos) {
+                                try {
+                                    precision = std::stoi(value.substr(0, comma));
+                                    scale     = std::stoi(value.substr(comma + 1));
+                                } catch (...) {}
+                            }
+                        } else if (key == "KBC.datatype.nullable") {
+                            col.nullable = (value != "0" && value != "false");
+                        } else if (key == "KBC.description") {
+                            col.description = value;
+                        }
+                    }
+                }
+            }
+
+            col.duckdb_type = MapKeboolaTypeToDuckDB(kbc_type, basetype, precision, scale);
+            table.columns.push_back(std::move(col));
+        }
+    }
+
+    return table;
+}
+
+// ---------------------------------------------------------------------------
 // ListBuckets
 // ---------------------------------------------------------------------------
 
@@ -239,111 +336,46 @@ std::vector<KeboolaBucketInfo> StorageApiClient::ListBuckets() {
         return result;
     }
 
-    // Helper: parse one table JSON element into KeboolaTableInfo
-    auto parse_table = [&](yyjson_val *table_json) -> KeboolaTableInfo {
-        KeboolaTableInfo table;
-        table.id   = JsonStrOr(table_json, "id");
-        table.name = JsonStrOr(table_json, "name");
-
-        // Derive bucket_id: everything before the last '.' in the table id
-        auto last_dot = table.id.rfind('.');
-        table.bucket_id = (last_dot != std::string::npos)
-                          ? table.id.substr(0, last_dot)
-                          : table.id;
-
-        // Table-level metadata for description
-        yyjson_val *table_meta = yyjson_obj_get(table_json, "metadata");
-        if (table_meta && yyjson_is_arr(table_meta)) {
-            size_t mi, mm;
-            yyjson_val *meta;
-            yyjson_arr_foreach(table_meta, mi, mm, meta) {
-                std::string mk = JsonStrOr(meta, "key");
-                if (mk == "KBC.description") {
-                    table.description = JsonStrOr(meta, "value");
-                }
-            }
-        }
-
-        // Primary key
-        yyjson_val *pk = yyjson_obj_get(table_json, "primaryKey");
-        if (pk && yyjson_is_arr(pk)) {
-            size_t pi, pm;
-            yyjson_val *pv;
-            yyjson_arr_foreach(pk, pi, pm, pv) {
-                if (yyjson_is_str(pv)) {
-                    table.primary_key.push_back(yyjson_get_str(pv));
-                }
-            }
-        }
-
-        // Columns + columnMetadata
-        yyjson_val *columns_arr  = yyjson_obj_get(table_json, "columns");
-        yyjson_val *col_meta_obj = yyjson_obj_get(table_json, "columnMetadata");
-
-        if (columns_arr && yyjson_is_arr(columns_arr)) {
-            size_t ci, cm;
-            yyjson_val *col_name_val;
-            yyjson_arr_foreach(columns_arr, ci, cm, col_name_val) {
-                if (!yyjson_is_str(col_name_val)) continue;
-
-                KeboolaColumnInfo col;
-                col.name = yyjson_get_str(col_name_val);
-
-                std::string kbc_type;
-                std::string basetype;
-                int precision = 0;
-                int scale     = 0;
-
-                if (col_meta_obj && yyjson_is_obj(col_meta_obj)) {
-                    yyjson_val *col_meta_arr = yyjson_obj_get(col_meta_obj, col.name.c_str());
-                    if (col_meta_arr && yyjson_is_arr(col_meta_arr)) {
-                        size_t cmi, cmm;
-                        yyjson_val *cm_entry;
-                        yyjson_arr_foreach(col_meta_arr, cmi, cmm, cm_entry) {
-                            std::string key   = JsonStrOr(cm_entry, "key");
-                            std::string value = JsonStrOr(cm_entry, "value");
-
-                            if (key == "KBC.datatype.type") {
-                                kbc_type         = value;
-                                col.keboola_type = value;
-                            } else if (key == "KBC.datatype.basetype") {
-                                basetype = value;
-                            } else if (key == "KBC.datatype.length") {
-                                auto comma = value.find(',');
-                                if (comma != std::string::npos) {
-                                    try {
-                                        precision = std::stoi(value.substr(0, comma));
-                                        scale     = std::stoi(value.substr(comma + 1));
-                                    } catch (...) {}
-                                }
-                            } else if (key == "KBC.datatype.nullable") {
-                                col.nullable = (value != "0" && value != "false");
-                            } else if (key == "KBC.description") {
-                                col.description = value;
-                            }
-                        }
-                    }
-                }
-
-                col.duckdb_type = MapKeboolaTypeToDuckDB(kbc_type, basetype, precision, scale);
-                table.columns.push_back(std::move(col));
-            }
-        }
-
-        return table;
-    };
-
     // Associate tables with their buckets
     size_t tidx, tmax;
     yyjson_val *table_json;
     yyjson_arr_foreach(tables_root, tidx, tmax, table_json) {
-        KeboolaTableInfo table = parse_table(table_json);
+        KeboolaTableInfo table = ParseTableJsonElement(table_json);
         auto it = bucket_idx.find(table.bucket_id);
         if (it != bucket_idx.end()) {
             result[it->second].tables.push_back(std::move(table));
         }
     }
 
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// FetchBucketTables
+// ---------------------------------------------------------------------------
+
+std::vector<KeboolaTableInfo> StorageApiClient::FetchBucketTables(const std::string &bucket_id) {
+    std::string tables_body;
+    try {
+        tables_body = http_.Get("/v2/storage/buckets/" + bucket_id +
+                                "/tables?include=columns,columnMetadata,metadata");
+    } catch (const std::exception &e) {
+        throw IOException("Keboola connection failed (fetch bucket tables '%s'): %s",
+                          bucket_id, std::string(e.what()));
+    }
+
+    auto td = ParseJson(tables_body, "fetch-bucket-tables");
+    yyjson_val *tables_root = yyjson_doc_get_root(td.doc);
+    if (!yyjson_is_arr(tables_root)) {
+        return {};
+    }
+
+    std::vector<KeboolaTableInfo> result;
+    size_t tidx, tmax;
+    yyjson_val *table_json;
+    yyjson_arr_foreach(tables_root, tidx, tmax, table_json) {
+        result.push_back(ParseTableJsonElement(table_json));
+    }
     return result;
 }
 
@@ -496,7 +528,14 @@ int64_t StorageApiClient::DeleteRows(const std::string &table_id,
                     else if (c == '\n') out += "\\n";
                     else if (c == '\r') out += "\\r";
                     else if (c == '\t') out += "\\t";
-                    else                out += static_cast<char>(c);
+                    else if (c < 0x20) {
+                        // Other control characters must be escaped as \uXXXX per JSON spec
+                        char buf[7];
+                        snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+                        out += buf;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
                 }
                 return out;
             };

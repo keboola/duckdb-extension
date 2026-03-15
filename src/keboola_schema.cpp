@@ -3,6 +3,9 @@
 #include "http/query_service_client.hpp"
 #include "util/sql_generator.hpp"
 
+#include <future>
+#include <vector>
+
 #include "duckdb/common/exception.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
@@ -112,6 +115,46 @@ void KeboolaSchemaEntry::BuildTableEntries(Catalog &catalog) {
         std::string lower_name = StringUtil::Lower(tbl.name);
         tables_[lower_name] = std::move(entry);
     }
+    // If tables were pre-loaded via ListBuckets at ATTACH time, mark as fresh so
+    // Scan does not immediately re-fetch (saves one HTTP round-trip per bucket).
+    if (!bucket_.tables.empty()) {
+        last_refresh_ = std::chrono::steady_clock::now();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RefreshTables — per-bucket refresh (faster than full ListBuckets)
+// ---------------------------------------------------------------------------
+
+void KeboolaSchemaEntry::RefreshTables() {
+    // Throttle: skip if refreshed within the last 2 seconds to avoid API hammering.
+    static constexpr int64_t REFRESH_THROTTLE_MS = 2000;
+    auto now = std::chrono::steady_clock::now();
+    if (last_refresh_ != std::chrono::steady_clock::time_point{}) {
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_refresh_).count();
+        if (elapsed_ms < REFRESH_THROTTLE_MS) {
+            return;
+        }
+    }
+
+    std::vector<KeboolaTableInfo> fresh_tables;
+    try {
+        fresh_tables = connection_->storage_client->FetchBucketTables(bucket_.id);
+    } catch (...) {
+        return; // leave existing cache intact on network errors
+    }
+
+    last_refresh_ = std::chrono::steady_clock::now();
+
+    auto &catalog = ParentCatalog();
+    for (auto &tbl : fresh_tables) {
+        std::string lower_name = StringUtil::Lower(tbl.name);
+        if (tables_.find(lower_name) == tables_.end()) {
+            bucket_.tables.push_back(tbl);
+            tables_[lower_name] = MakeTableEntry(catalog, tbl);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +171,15 @@ optional_ptr<CatalogEntry> KeboolaSchemaEntry::LookupEntry(
 
     const auto &name = StringUtil::Lower(lookup_info.GetEntryName());
     auto it = tables_.find(name);
+    if (it != tables_.end()) {
+        return it->second.get();
+    }
+
+    // Table not found — refresh from the Storage API once and retry.
+    // This handles tables created after ATTACH (e.g. with module-scoped connections).
+    RefreshTables();
+
+    it = tables_.find(name);
     if (it == tables_.end()) {
         return nullptr;
     }
@@ -143,6 +195,7 @@ void KeboolaSchemaEntry::Scan(ClientContext & /*context*/, CatalogType type,
     if (type != CatalogType::TABLE_ENTRY) {
         return;
     }
+    RefreshTables(); // lazily pick up tables created after ATTACH (throttled)
     for (auto &kv : tables_) {
         callback(*kv.second);
     }
@@ -153,6 +206,7 @@ void KeboolaSchemaEntry::Scan(CatalogType type,
     if (type != CatalogType::TABLE_ENTRY) {
         return;
     }
+    RefreshTables(); // lazily pick up tables created after ATTACH (throttled)
     for (auto &kv : tables_) {
         callback(*kv.second);
     }
@@ -280,12 +334,31 @@ void KeboolaSchemaEntry::PullTable(ClientContext & /*context*/, const std::strin
 }
 
 void KeboolaSchemaEntry::PullAllTables(ClientContext &context) {
+    // Pull tables in parallel (up to 8 concurrent HTTP requests) to avoid
+    // timing out on large projects.
+    static constexpr int MAX_CONCURRENT = 8;
+
+    std::vector<std::string> names;
+    names.reserve(tables_.size());
     for (auto &kv : tables_) {
-        try {
-            PullTable(context, kv.second->GetKeboolaTableInfo().name);
-        } catch (const std::exception &) {
-            // Skip tables that fail to pull; they remain in live (non-snapshot) mode.
-            // This prevents a single inaccessible table from aborting ATTACH SNAPSHOT.
+        names.push_back(kv.second->GetKeboolaTableInfo().name);
+    }
+
+    for (size_t i = 0; i < names.size(); i += MAX_CONCURRENT) {
+        std::vector<std::future<void>> futures;
+        const size_t end = std::min(i + static_cast<size_t>(MAX_CONCURRENT), names.size());
+        for (size_t j = i; j < end; j++) {
+            std::string name = names[j];  // copy — captured by value in lambda
+            futures.push_back(std::async(std::launch::async, [this, &context, name]() {
+                try {
+                    PullTable(context, name);
+                } catch (const std::exception &) {
+                    // Skip tables that fail to pull; they remain in live mode.
+                }
+            }));
+        }
+        for (auto &f : futures) {
+            f.wait();
         }
     }
 }

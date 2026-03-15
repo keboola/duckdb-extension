@@ -72,7 +72,7 @@ jobs:
   # ---------------------------------------------------------------------------
   e2e:
     name: E2E tests
-    needs: build-linux
+    needs: duckdb-stable-build
     runs-on: ubuntu-latest
 
     env:
@@ -87,7 +87,7 @@ jobs:
       - name: Download linux_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: keboola-linux_amd64
+          name: keboola-v1.5.0-extension-linux_amd64
           path: artifacts/
 
       - name: Install uv

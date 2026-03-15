@@ -93,7 +93,7 @@ SinkFinalizeType KeboolaInsert::Finalize(Pipeline & /*pipeline*/,
     const auto &conn = *gstate.connection;
 
     // Upload the accumulated CSV to Keboola Storage Importer
-    ImporterClient importer(conn.service_urls.importer_url, conn.token);
+    ImporterClient importer(conn.service_urls.importer_url, conn.service_urls.storage_url, conn.token);
     try {
         importer.WriteTable(gstate.table_id, gstate.csv_builder.GetCsv(), /*incremental=*/true);
     } catch (const std::exception &e) {

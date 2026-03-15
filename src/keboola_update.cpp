@@ -1,7 +1,11 @@
 #include "keboola_update.hpp"
+#include "keboola_delete.hpp"
 #include "include/keboola_table.hpp"
 #include "http/importer_client.hpp"
+#include "http/query_service_client.hpp"
+#include "http/storage_api_client.hpp"
 #include "util/csv_builder.hpp"
+#include "util/sql_generator.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
@@ -12,13 +16,18 @@
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/event.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 #include <memory>
 #include <string>
 #include <vector>
+#include <sstream>
 
 namespace duckdb {
+
+// NULL sentinel: Unicode Private Use Area U+E000 (UTF-8: 0xEE 0x80 0x80).
+// VARCHAR NULLs must be encoded with this sentinel so NULL is distinguishable
+// from empty-string in Keboola's untyped (all-string) CSV tables.
+static const char *kNullSentinel = "\xEE\x80\x80";
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -27,15 +36,43 @@ namespace duckdb {
 KeboolaUpdate::KeboolaUpdate(PhysicalPlan &physical_plan,
                               LogicalOperator &op,
                               TableCatalogEntry &table,
-                              vector<PhysicalIndex> columns,
-                              vector<unique_ptr<Expression>> updates)
+                              vector<KeboolaUpdateSetColumn> set_columns,
+                              KeboolaDeleteParams where_params)
     : PhysicalOperator(physical_plan,
                        PhysicalOperatorType::EXTENSION,
                        op.types,
                        op.estimated_cardinality),
       table_(table),
-      columns_(std::move(columns)),
-      updates_(std::move(updates)) {}
+      set_columns_(std::move(set_columns)),
+      where_params_(std::move(where_params)) {}
+
+// ---------------------------------------------------------------------------
+// BuildWhereSql — convert KeboolaDeleteParams → SQL WHERE fragment
+// ---------------------------------------------------------------------------
+
+static std::string BuildWhereSql(const KeboolaDeleteParams &params) {
+    if (params.where_column.empty() || params.where_values.empty()) {
+        return "";
+    }
+
+    const std::string col = KeboolaSqlGenerator::EscapeIdentifier(params.where_column);
+
+    if (params.where_values.size() == 1) {
+        const std::string val = KeboolaSqlGenerator::EscapeStringLiteral(params.where_values[0]);
+        const std::string op = (params.where_operator == "ne") ? " <> " : " = ";
+        return col + op + val;
+    }
+
+    // Multiple values: emit IN list
+    std::ostringstream oss;
+    oss << col << " IN (";
+    for (size_t i = 0; i < params.where_values.size(); i++) {
+        if (i > 0) oss << ", ";
+        oss << KeboolaSqlGenerator::EscapeStringLiteral(params.where_values[i]);
+    }
+    oss << ")";
+    return oss.str();
+}
 
 // ---------------------------------------------------------------------------
 // GetGlobalSinkState
@@ -55,89 +92,24 @@ unique_ptr<GlobalSinkState> KeboolaUpdate::GetGlobalSinkState(ClientContext & /*
     gstate->table_id    = table_info.id;
     gstate->connection  = keboola_table.GetConnection();
     gstate->primary_key = table_info.primary_key;
-
-    // Build the ordered list of all column names
-    const auto &columns = table_.GetColumns();
-    for (const auto &col : columns.Logical()) {
-        gstate->all_column_names.push_back(col.GetName());
-    }
-
-    // Resolve each SET column: map PhysicalIndex → column name + new value string
-    for (idx_t i = 0; i < columns_.size(); i++) {
-        KeboolaUpdateSetColumn sc;
-        sc.col_index = columns_[i].index;
-
-        if (sc.col_index < gstate->all_column_names.size()) {
-            sc.col_name = gstate->all_column_names[sc.col_index];
-        } else {
-            sc.col_name = "col_" + std::to_string(sc.col_index);
-        }
-
-        // Extract the new value from the expression.
-        // For constant expressions (the common case) cast directly.
-        // For anything else fall back to ToString() on the expression.
-        if (i < updates_.size() && updates_[i]) {
-            const auto &expr = *updates_[i];
-            if (expr.expression_class == ExpressionClass::BOUND_CONSTANT) {
-                const auto &bce = expr.Cast<BoundConstantExpression>();
-                if (bce.value.IsNull()) {
-                    sc.new_value = "";
-                } else {
-                    sc.new_value = bce.value.ToString();
-                }
-            } else {
-                // Non-constant expression: use the expression's ToString as a
-                // best-effort value.  Complex subquery-based SET targets will
-                // throw NotImplementedException below.
-                sc.new_value = expr.ToString();
-            }
-        }
-
-        gstate->set_columns.push_back(std::move(sc));
-    }
+    gstate->set_columns = set_columns_;
+    gstate->where_params = where_params_;
 
     return std::move(gstate);
 }
 
 // ---------------------------------------------------------------------------
-// Sink — collect all matching rows from the child plan
+// Sink — no-op; actual work is done in Finalize
 // ---------------------------------------------------------------------------
 
 SinkResultType KeboolaUpdate::Sink(ExecutionContext & /*context*/,
-                                    DataChunk &chunk,
-                                    OperatorSinkInput &input) const {
-    auto &gstate = input.global_state.Cast<KeboolaUpdateGlobalState>();
-
-    const idx_t n_cols = gstate.all_column_names.size();
-
-    chunk.Flatten();
-
-    for (idx_t row = 0; row < chunk.size(); row++) {
-        std::vector<std::string> row_values;
-        row_values.reserve(n_cols);
-
-        for (idx_t col = 0; col < n_cols && col < chunk.ColumnCount(); col++) {
-            Value val = chunk.GetValue(col, row);
-            if (val.IsNull()) {
-                row_values.push_back("");
-            } else {
-                row_values.push_back(val.ToString());
-            }
-        }
-
-        // Pad with empty strings if the chunk has fewer columns than the table
-        while (row_values.size() < n_cols) {
-            row_values.push_back("");
-        }
-
-        gstate.matched_rows.push_back(std::move(row_values));
-    }
-
+                                    DataChunk & /*chunk*/,
+                                    OperatorSinkInput & /*input*/) const {
     return SinkResultType::NEED_MORE_INPUT;
 }
 
 // ---------------------------------------------------------------------------
-// Finalize — apply SET values and upload merged CSV
+// Finalize — query QS for matching rows, apply SET values, upload merged CSV
 // ---------------------------------------------------------------------------
 
 SinkFinalizeType KeboolaUpdate::Finalize(Pipeline & /*pipeline*/,
@@ -145,33 +117,184 @@ SinkFinalizeType KeboolaUpdate::Finalize(Pipeline & /*pipeline*/,
                                           ClientContext & /*context*/,
                                           OperatorSinkFinalizeInput &input) const {
     auto &gstate = input.global_state.Cast<KeboolaUpdateGlobalState>();
+    const auto &conn = *gstate.connection;
 
-    if (gstate.matched_rows.empty()) {
-        // No rows matched the WHERE clause — nothing to do
+    // Build the SELECT SQL to fetch matching rows from Query Service
+    const std::string &table_id = gstate.table_id;
+
+    // Split table_id on the last dot: "in.c-bucket.table" → schema + table
+    std::string schema_part, table_part;
+    auto last_dot = table_id.rfind('.');
+    if (last_dot != std::string::npos) {
+        schema_part = table_id.substr(0, last_dot);
+        table_part  = table_id.substr(last_dot + 1);
+    } else {
+        table_part = table_id;
+    }
+
+    std::string from_clause;
+    if (!schema_part.empty()) {
+        from_clause = KeboolaSqlGenerator::EscapeIdentifier(schema_part) + "." +
+                      KeboolaSqlGenerator::EscapeIdentifier(table_part);
+    } else {
+        from_clause = KeboolaSqlGenerator::EscapeIdentifier(table_part);
+    }
+
+    std::string select_sql = "SELECT * FROM " + from_clause;
+    const std::string where_sql = BuildWhereSql(gstate.where_params);
+    if (!where_sql.empty()) {
+        select_sql += " WHERE " + where_sql;
+    }
+
+    // Execute query against the Query Service
+    QueryServiceClient qsc(conn.service_urls.query_url,
+                           conn.token,
+                           conn.branch_id,
+                           conn.workspace_id);
+
+    QueryServiceResult result;
+    try {
+        result = qsc.ExecuteQuery(select_sql);
+    } catch (const std::exception &e) {
+        throw IOException("Keboola UPDATE: failed to fetch matching rows for table '%s': %s",
+                          table_id, std::string(e.what()));
+    }
+
+    if (result.rows.empty()) {
+        // No matching rows — nothing to update
         gstate.update_count = 0;
         return SinkFinalizeType::READY;
     }
 
-    // Apply SET column overrides to every matched row
-    for (auto &row : gstate.matched_rows) {
-        for (const auto &sc : gstate.set_columns) {
-            if (sc.col_index < row.size()) {
-                row[sc.col_index] = sc.new_value;
+    // Build a name → column-index map from the Query Service result columns
+    std::vector<std::string> col_names;
+    col_names.reserve(result.columns.size());
+    for (const auto &col : result.columns) {
+        col_names.push_back(col.name);
+    }
+
+    // Build a map from SET column name to (col_index_in_result, new_value, is_null)
+    struct SetInfo { idx_t res_col_idx; std::string new_value; bool is_null; };
+    std::vector<SetInfo> set_infos;
+    for (const auto &sc : gstate.set_columns) {
+        SetInfo si;
+        si.is_null    = sc.is_null;
+        si.new_value  = sc.new_value;
+        si.res_col_idx = col_names.size(); // sentinel: not found
+
+        for (idx_t ci = 0; ci < col_names.size(); ci++) {
+            if (col_names[ci] == sc.col_name) {
+                si.res_col_idx = ci;
+                break;
+            }
+        }
+        // If column name not found in result, skip silently (schema mismatch tolerance)
+        if (si.res_col_idx == col_names.size()) {
+            continue;
+        }
+        set_infos.push_back(si);
+    }
+
+    // Apply SET overrides to all matched rows
+    auto rows = result.rows;
+    auto null_mask = result.null_mask;
+
+    for (auto &row : rows) {
+        for (const auto &si : set_infos) {
+            if (si.res_col_idx < row.size()) {
+                row[si.res_col_idx] = si.new_value;
+            }
+        }
+    }
+    if (!null_mask.empty()) {
+        for (auto &row_nulls : null_mask) {
+            for (const auto &si : set_infos) {
+                if (si.res_col_idx < row_nulls.size()) {
+                    row_nulls[si.res_col_idx] = si.is_null;
+                }
             }
         }
     }
 
-    // Build CSV from merged rows
+    // Build CSV from the updated rows
     CsvBuilder csv;
-    csv.AddHeader(gstate.all_column_names);
-    for (const auto &row : gstate.matched_rows) {
-        csv.AddRow(row);
+    csv.AddHeader(col_names);
+    for (idx_t ri = 0; ri < rows.size(); ri++) {
+        const auto &row = rows[ri];
+        const auto *row_nulls = (ri < null_mask.size()) ? &null_mask[ri] : nullptr;
+        std::vector<std::string> csv_row;
+        csv_row.reserve(row.size());
+        for (idx_t ci = 0; ci < row.size(); ci++) {
+            bool is_null = (row_nulls && ci < row_nulls->size() && (*row_nulls)[ci]);
+            if (is_null) {
+                // VARCHAR (TEXT) NULLs require the sentinel so NULL is distinguishable
+                // from an empty string in Keboola's string-typed CSV storage.
+                // For other types the sentinel is also safe: on read-back StringToValue()
+                // fails to parse it as a number/date and returns NULL via the catch path.
+                bool is_text = (ci < result.columns.size() &&
+                                (result.columns[ci].type == "TEXT" ||
+                                 result.columns[ci].type == "STRING" ||
+                                 result.columns[ci].type == "VARCHAR"));
+                csv_row.push_back(is_text ? kNullSentinel : "");
+            } else {
+                csv_row.push_back(row[ci]);
+            }
+        }
+        csv.AddRow(csv_row);
     }
 
-    const auto &conn = *gstate.connection;
+    // DELETE the matched rows by PK, then re-INSERT the updated rows.
+    // This avoids relying on BigQuery's async deduplication (incremental=1 upsert),
+    // which can cause stale reads immediately after the write job completes.
+    // NOTE: multi-column primary keys are not supported; GetGlobalSinkState already
+    // requires primary_key to be non-empty, so primary_key.size() == 1 is assumed here.
+    {
+        // Find PK column index in col_names
+        const std::string &pk_col = gstate.primary_key[0];
+        idx_t pk_col_idx = col_names.size(); // sentinel
+        for (idx_t ci = 0; ci < col_names.size(); ci++) {
+            if (col_names[ci] == pk_col) {
+                pk_col_idx = ci;
+                break;
+            }
+        }
+        if (pk_col_idx == col_names.size()) {
+            throw IOException(
+                "Keboola UPDATE: primary key column '%s' not found in query result for table '%s'",
+                pk_col, gstate.table_id);
+        }
 
-    // Upload via Importer — incremental=true so Storage deduplicates on PK
-    ImporterClient importer(conn.service_urls.importer_url, conn.token);
+        // Collect PK values from the (pre-SET-override) original rows.
+        // We use `result.rows` (before SET was applied) so the PK values are the
+        // original keys that exist in Storage and need to be deleted.
+        std::vector<std::string> pk_values;
+        pk_values.reserve(result.rows.size());
+        for (const auto &row : result.rows) {
+            if (pk_col_idx < row.size()) {
+                pk_values.push_back(row[pk_col_idx]);
+            }
+        }
+
+        // Delete the existing rows from Storage by PK
+        KeboolaDeleteParams delete_params;
+        delete_params.where_column   = pk_col;
+        delete_params.where_values   = std::move(pk_values);
+        delete_params.where_operator = "eq";
+        delete_params.allow_truncate = false;
+
+        try {
+            conn.storage_client->DeleteRows(gstate.table_id, delete_params);
+        } catch (const std::exception &e) {
+            throw IOException(
+                "Keboola UPDATE: DELETE step failed for table '%s': %s",
+                gstate.table_id, std::string(e.what()));
+        }
+    }
+
+    // Re-INSERT the updated rows (append-only since old rows were deleted above)
+    ImporterClient importer(conn.service_urls.importer_url,
+                            conn.service_urls.storage_url,
+                            conn.token);
     try {
         importer.WriteTable(gstate.table_id, csv.GetCsv(), /*incremental=*/true);
     } catch (const std::exception &e) {
@@ -179,7 +302,7 @@ SinkFinalizeType KeboolaUpdate::Finalize(Pipeline & /*pipeline*/,
                           gstate.table_id, std::string(e.what()));
     }
 
-    gstate.update_count = static_cast<int64_t>(gstate.matched_rows.size());
+    gstate.update_count = static_cast<int64_t>(rows.size());
     return SinkFinalizeType::READY;
 }
 

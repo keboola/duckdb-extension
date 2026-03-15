@@ -42,6 +42,10 @@ def _upload_rows(storage_api, table_id: str, rows: list[dict]):
         files={"data": ("data.csv", buf.getvalue().encode(), "text/csv")},
     )
     r.raise_for_status()
+    # On GCP stacks the importer returns an async job — wait for it to complete.
+    resp = r.json() if r.content else {}
+    if isinstance(resp, dict) and "id" in resp and "status" in resp:
+        storage_api.wait_for_job(str(resp["id"]))
 
 
 INITIAL_ROWS = [

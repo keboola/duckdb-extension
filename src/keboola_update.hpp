@@ -1,13 +1,12 @@
 #pragma once
 
 #include "include/keboola_connection.hpp"
-#include "util/csv_builder.hpp"
+#include "keboola_delete.hpp"
 
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 #include <memory>
 #include <string>
@@ -16,27 +15,28 @@
 namespace duckdb {
 
 // ---------------------------------------------------------------------------
+// KeboolaUpdateSetColumn
+// ---------------------------------------------------------------------------
+
+//! Describes one SET column in an UPDATE statement.
+struct KeboolaUpdateSetColumn {
+    idx_t col_index;          //!< Physical column index in the table
+    std::string col_name;
+    std::string new_value;    //!< String representation of the new value (empty = NULL)
+    bool is_null = false;     //!< true when SET col = NULL
+};
+
+// ---------------------------------------------------------------------------
 // KeboolaUpdateGlobalState
 // ---------------------------------------------------------------------------
 
-struct KeboolaUpdateSetColumn {
-    idx_t col_index;          //!< Index into the full table column list
-    std::string col_name;
-    std::string new_value;    //!< String representation of the new value
-};
-
-//! Global sink state for KeboolaUpdate — collects matched rows and applies SET values.
+//! Global sink state for KeboolaUpdate.
 struct KeboolaUpdateGlobalState : public GlobalSinkState {
-    //! All rows matching the WHERE clause, one per row, values in table-column order.
-    std::vector<std::vector<std::string>> matched_rows;
-
-    //! SET column descriptors (which columns to overwrite and with what value).
-    std::vector<KeboolaUpdateSetColumn> set_columns;
-
     std::string table_id;
-    std::vector<std::string> all_column_names;
     std::vector<std::string> primary_key;
     std::shared_ptr<KeboolaConnection> connection;
+    std::vector<KeboolaUpdateSetColumn> set_columns;
+    KeboolaDeleteParams where_params;
 
     int64_t update_count = 0;
 };
@@ -54,30 +54,33 @@ struct KeboolaUpdateSourceState : public GlobalSourceState {
 // KeboolaUpdate PhysicalOperator
 // ---------------------------------------------------------------------------
 
-//! Physical operator that:
-//!   1. Sinks the rows selected by the WHERE clause (provided by the child plan).
-//!   2. In Finalize: overwrites SET columns with their new values and uploads
-//!      the merged rows as a single incremental CSV to the Keboola Importer.
-//!      Storage deduplicates on PK, so old rows are replaced.
-//!   3. As a Source: emits one row with the BIGINT update count.
+//! Physical operator that implements UPDATE for Keboola tables.
+//!
+//! Algorithm (same pattern as KeboolaDelete):
+//!   1. Plan time: extract WHERE params (from scan table_filters) and SET params
+//!      (from PhysicalProjection select_list).
+//!   2. Sink: no-op — child plan chunks are ignored.
+//!   3. Finalize: query the Query Service for matching rows, apply SET column
+//!      overrides, re-upload as incremental CSV. Storage deduplicates on PK.
+//!   4. GetDataInternal: emit one row with the BIGINT update count.
 class KeboolaUpdate : public PhysicalOperator {
 public:
     KeboolaUpdate(PhysicalPlan &physical_plan,
                   LogicalOperator &op,
                   TableCatalogEntry &table,
-                  vector<PhysicalIndex> columns,
-                  vector<unique_ptr<Expression>> updates);
+                  vector<KeboolaUpdateSetColumn> set_columns,
+                  KeboolaDeleteParams where_params);
 
     //! The target table entry (holds column metadata and connection).
     TableCatalogEntry &table_;
-    //! Physical column indices for the SET targets.
-    vector<PhysicalIndex> columns_;
-    //! New-value expressions for each SET column (parallel to columns_).
-    vector<unique_ptr<Expression>> updates_;
+    //! SET column descriptors extracted at plan time.
+    vector<KeboolaUpdateSetColumn> set_columns_;
+    //! WHERE parameters extracted at plan time (same as KeboolaDelete).
+    KeboolaDeleteParams where_params_;
 
 public:
     // -----------------------------------------------------------------------
-    // Sink interface
+    // Sink interface — no-op; actual work is done in Finalize
     // -----------------------------------------------------------------------
 
     unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override;

@@ -240,7 +240,8 @@ def test_snapshot_write_still_live(duckdb_con, keboola_token, keboola_url,
         ATTACH '{keboola_url}' AS kbc_snap_write (
             TYPE keboola,
             TOKEN '{keboola_token}',
-            SNAPSHOT
+            SNAPSHOT,
+            READ_WRITE
         )
     """)
     try:

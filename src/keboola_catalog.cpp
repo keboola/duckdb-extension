@@ -2,6 +2,7 @@
 #include "keboola_insert.hpp"
 #include "keboola_update.hpp"
 #include "keboola_delete.hpp"
+#include "include/keboola_table.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -28,6 +29,9 @@
 #include "duckdb/planner/filter/in_filter.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
 #include "duckdb/execution/operator/filter/physical_filter.hpp"
+#include "duckdb/execution/operator/projection/physical_projection.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "util/sql_generator.hpp"
 
 namespace duckdb {
 
@@ -200,6 +204,14 @@ PhysicalOperator &KeboolaCatalog::PlanInsert(ClientContext & /*context*/,
                                               LogicalInsert &op,
                                               optional_ptr<PhysicalOperator> plan) {
     D_ASSERT(plan);
+
+    // When only a subset of columns is specified (e.g. INSERT INTO t (a, b) VALUES ...)
+    // the child plan produces only those columns.  We must expand the chunk to the full
+    // table width — filling defaults/NULLs for omitted columns — before KeboolaInsert
+    // sees it, so that the CSV always has exactly as many columns as the target table.
+    if (!op.column_index_map.empty()) {
+        plan = planner.ResolveDefaultsProjection(op, *plan);
+    }
 
     auto &insert = planner.Make<KeboolaInsert>(op, op.table, PhysicalIndex(DConstants::INVALID_INDEX));
     insert.children.push_back(*plan);
@@ -641,13 +653,35 @@ static KeboolaDeleteParams TableFilterToDeleteParams(const std::string &col_name
 //! In the PhysicalTableScan the filter key is the RELATIVE index (position in column_ids),
 //! and column_ids[k].GetPrimaryIndex() gives the absolute schema column index into names[].
 static KeboolaDeleteParams ExtractDeleteParamsFromPhysicalScan(const PhysicalTableScan &scan) {
+#if KEBOOLA_DUCKDB_NEW_FILTER_API
+    if (!scan.table_filters || !scan.table_filters->HasFilters()) {
+#else
     if (!scan.table_filters || scan.table_filters->filters.empty()) {
+#endif
         // No filters in the scan → plain DELETE (no WHERE clause)
         KeboolaDeleteParams params;
         params.allow_truncate = true;
         return params;
     }
 
+#if KEBOOLA_DUCKDB_NEW_FILTER_API
+    // Count filters via iterator to check if there is more than one
+    {
+        idx_t filter_count = 0;
+        for (const auto &e : *scan.table_filters) {
+            (void)e;
+            ++filter_count;
+        }
+        if (filter_count > 1) {
+            throw NotImplementedException(
+                "DELETE WHERE with multiple predicates is not supported by the Storage API. "
+                "Combine values using IN, or run multiple DELETE statements.");
+        }
+    }
+    const auto &first_entry = *scan.table_filters->begin();
+    idx_t        rel_idx    = first_entry.ColumnIndex();
+    const TableFilter &tf   = first_entry.Filter();
+#else
     const auto &tf_map = scan.table_filters->filters;
 
     if (tf_map.size() > 1) {
@@ -659,6 +693,7 @@ static KeboolaDeleteParams ExtractDeleteParamsFromPhysicalScan(const PhysicalTab
     const auto &entry     = *tf_map.begin();
     idx_t        rel_idx  = entry.first;   // relative index into scan.column_ids
     const TableFilter &tf = *entry.second; // valid non-null pointer in the physical scan
+#endif
 
     // Map relative index → absolute column index → column name
     if (rel_idx >= scan.column_ids.size()) {
@@ -673,6 +708,15 @@ static KeboolaDeleteParams ExtractDeleteParamsFromPhysicalScan(const PhysicalTab
             (unsigned long long)abs_idx, (unsigned long long)scan.names.size());
     }
     const std::string &col_name = scan.names[abs_idx];
+
+    // OptionalFilter is for zone-map pruning only — it is NOT a correctness filter.
+    // The actual WHERE is in the PhysicalFilter expression on top of the scan.
+    // Signal the caller to fall through and use PhysicalFilter instead.
+    if (tf.filter_type == TableFilterType::OPTIONAL_FILTER) {
+        KeboolaDeleteParams params;
+        params.allow_truncate = true;
+        return params;
+    }
 
     return TableFilterToDeleteParams(col_name, tf);
 }
@@ -743,7 +787,11 @@ PhysicalOperator &KeboolaCatalog::PlanDelete(ClientContext & /*context*/,
         if (plan.type == PhysicalOperatorType::TABLE_SCAN) {
             // Case A: check PhysicalTableScan's table_filters (moved from LogicalGet)
             auto &scan = plan.Cast<PhysicalTableScan>();
+#if KEBOOLA_DUCKDB_NEW_FILTER_API
+            if (scan.table_filters && scan.table_filters->HasFilters()) {
+#else
             if (scan.table_filters && !scan.table_filters->filters.empty()) {
+#endif
                 params = ExtractDeleteParamsFromPhysicalScan(scan);
             }
         } else if (plan.type == PhysicalOperatorType::FILTER &&
@@ -780,9 +828,139 @@ PhysicalOperator &KeboolaCatalog::PlanUpdate(ClientContext & /*context*/,
                                               PhysicalPlanGenerator &planner,
                                               LogicalUpdate &op,
                                               PhysicalOperator &plan) {
+    // -----------------------------------------------------------------------
+    // Step 1: Walk down `plan` to find the PhysicalTableScan.
+    // `plan` is the child physical plan created from LogicalProjection,
+    // so it may be PROJECTION → (FILTER →) TABLE_SCAN.
+    // -----------------------------------------------------------------------
+    PhysicalTableScan *scan_ptr = nullptr;
+    PhysicalFilter    *filter_ptr = nullptr;
+
+    PhysicalOperator *cur = &plan;
+
+    // Skip ALL PhysicalProjection layers.
+    // There can be more than one when LogicalFilter.HasProjectionMap() is true:
+    // DuckDB's CreatePlan(LogicalFilter) adds an extra PhysicalProjection for the
+    // projection_map on top of the PhysicalFilter, producing:
+    //   PROJECTION(SET exprs) → PROJECTION(filter_map) → FILTER → TABLE_SCAN
+    while (cur->type == PhysicalOperatorType::PROJECTION && !cur->children.empty()) {
+        cur = &cur->children[0].get();
+    }
+    // Optional PhysicalFilter layer
+    if (cur->type == PhysicalOperatorType::FILTER && !cur->children.empty()) {
+        filter_ptr = &cur->Cast<PhysicalFilter>();
+        cur = &cur->children[0].get();
+    }
+    if (cur->type == PhysicalOperatorType::TABLE_SCAN) {
+        scan_ptr = &cur->Cast<PhysicalTableScan>();
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 2: Extract WHERE params (same logic as PlanDelete)
+    // -----------------------------------------------------------------------
+    KeboolaDeleteParams where_params;
+    where_params.allow_truncate = true; // default: no WHERE
+
+    if (scan_ptr) {
+#if KEBOOLA_DUCKDB_NEW_FILTER_API
+        if (scan_ptr->table_filters && scan_ptr->table_filters->HasFilters()) {
+#else
+        if (scan_ptr->table_filters && !scan_ptr->table_filters->filters.empty()) {
+#endif
+            where_params = ExtractDeleteParamsFromPhysicalScan(*scan_ptr);
+        }
+    }
+    if (where_params.allow_truncate && filter_ptr && filter_ptr->expression) {
+        // Filter was not pushed into table_filters; use PhysicalFilter expression
+        if (scan_ptr) {
+            where_params = ParsePhysicalFilterExpression(*filter_ptr->expression,
+                                                         scan_ptr->names,
+                                                         scan_ptr->column_ids);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 3: Validate WHERE column is a primary key column
+    // -----------------------------------------------------------------------
+    auto &keboola_table = op.table.Cast<KeboolaTableEntry>();
+    const auto &pk = keboola_table.GetKeboolaTableInfo().primary_key;
+
+    if (!pk.empty() && !where_params.where_column.empty()) {
+        bool is_pk = false;
+        for (const auto &pk_col : pk) {
+            if (pk_col == where_params.where_column) { is_pk = true; break; }
+        }
+        if (!is_pk) {
+            throw NotImplementedException(
+                "UPDATE WHERE on non-primary key column '%s' is not supported. "
+                "Only PRIMARY KEY columns may be used in the WHERE clause "
+                "(Keboola Storage deduplication requires a primary key match).",
+                where_params.where_column);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 4: Extract SET params from the PhysicalProjection's select_list.
+    // The projection's select_list[0..op.columns.size()-1] are the SET expressions.
+    // For simple constant SET values (e.g. SET name = 'Alice'), these are
+    // BoundConstantExpression objects.
+    // -----------------------------------------------------------------------
+    vector<KeboolaUpdateSetColumn> set_columns;
+
+    const vector<unique_ptr<Expression>> *proj_exprs = nullptr;
+    if (plan.type == PhysicalOperatorType::PROJECTION) {
+        proj_exprs = &plan.Cast<PhysicalProjection>().select_list;
+    }
+
+    // Build ordered list of all logical column names for index mapping
+    vector<std::string> all_col_names;
+    for (const auto &col : op.table.GetColumns().Logical()) {
+        all_col_names.push_back(col.GetName());
+    }
+
+    for (idx_t i = 0; i < op.columns.size(); i++) {
+        KeboolaUpdateSetColumn sc;
+        sc.col_index = op.columns[i].index;
+
+        // Map physical index → column name
+        if (sc.col_index < all_col_names.size()) {
+            sc.col_name = all_col_names[sc.col_index];
+        } else {
+            sc.col_name = "col_" + std::to_string(sc.col_index);
+        }
+
+        // Extract the new value from the projection's select_list
+        if (proj_exprs && i < proj_exprs->size() && (*proj_exprs)[i]) {
+            const auto &expr = *(*proj_exprs)[i];
+            if (expr.expression_class == ExpressionClass::BOUND_CONSTANT) {
+                const auto &bce = expr.Cast<BoundConstantExpression>();
+                if (bce.value.IsNull()) {
+                    sc.new_value = "";
+                    sc.is_null   = true;
+                } else {
+                    sc.new_value = bce.value.ToString();
+                    sc.is_null   = false;
+                }
+            } else {
+                // Non-constant expression (subquery, column reference, etc.)
+                // Not supported in this implementation.
+                throw NotImplementedException(
+                    "UPDATE SET '%s' = <expression>: only constant literal values are "
+                    "supported in Keboola UPDATE (e.g. SET col = 'value'). "
+                    "Got expression: %s",
+                    sc.col_name, expr.ToString());
+            }
+        }
+
+        set_columns.push_back(std::move(sc));
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 5: Build KeboolaUpdate and attach child plan (needed for pipeline)
+    // -----------------------------------------------------------------------
     auto &update = planner.Make<KeboolaUpdate>(op, op.table,
-                                               op.columns,
-                                               std::move(op.bound_defaults));
+                                               std::move(set_columns),
+                                               std::move(where_params));
     update.children.push_back(plan);
     return update;
 }

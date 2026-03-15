@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <chrono>
 
 namespace duckdb {
 
@@ -87,6 +88,10 @@ public:
         return tables_;
     }
 
+    //! Refresh tables_ from the Storage API for this bucket only (public for keboola_tables()).
+    //! Throttled: at most one HTTP call per 2 seconds per schema entry.
+    void RefreshTables();
+
     //! Add a table entry built externally (used by CreateTable).
     //! Transfers ownership.
     void AddTableEntry(const std::string &lower_name,
@@ -99,6 +104,9 @@ private:
     std::shared_ptr<KeboolaConnection> connection_;
     //! Table entries keyed by table name (lower-cased for case-insensitive lookup)
     std::unordered_map<std::string, unique_ptr<KeboolaTableEntry>> tables_;
+
+    //! Timestamp of the last RefreshTables() call (epoch = never refreshed).
+    std::chrono::steady_clock::time_point last_refresh_{};
 
     //! Populate tables_ from bucket_ metadata (called once on construction)
     void BuildTableEntries(Catalog &catalog);

@@ -75,6 +75,10 @@ public:
     //! List all buckets visible to the token, including tables and column metadata.
     std::vector<KeboolaBucketInfo> ListBuckets();
 
+    //! Fetch all tables for a single bucket, including column metadata.
+    //! Faster than ListBuckets() when only one bucket needs refreshing.
+    std::vector<KeboolaTableInfo> FetchBucketTables(const std::string &bucket_id);
+
     //! Find an existing workspace tagged "duckdb-extension", or create a new one.
     KeboolaWorkspaceInfo FindOrCreateWorkspace();
 

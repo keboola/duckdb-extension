@@ -58,9 +58,9 @@ def keboola_extension_path():
 # DuckDB connection fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def duckdb_con(keboola_extension_path):
-    """Fresh in-memory DuckDB connection per test with keboola extension loaded."""
+    """Shared in-memory DuckDB connection per module with keboola extension loaded."""
     # allow_unsigned_extensions must be set at connection creation time (v1.5.0+)
     con = duckdb.connect(":memory:", config={"allow_unsigned_extensions": True})
     con.execute(f"LOAD '{keboola_extension_path}';")
@@ -68,11 +68,12 @@ def duckdb_con(keboola_extension_path):
     con.close()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def kbc(duckdb_con, keboola_token, keboola_url):
     """
     Attaches Keboola as 'kbc' in the duckdb_con, yields the connection,
     and detaches in teardown even on test failure.
+    Module-scoped: one ATTACH per test module for performance.
     """
     # READ_WRITE is required: DuckDB auto-sets HTTPS URLs to READ_ONLY by default.
     duckdb_con.execute(f"""
@@ -225,16 +226,17 @@ def storage_api(keboola_token, keboola_url):
 # Bucket fixture
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def test_bucket(storage_api, test_prefix):
+@pytest.fixture(scope="module")
+def test_bucket(storage_api):
     """
-    Creates `in.c-duckdbtest-{short_id}` bucket via the Storage API,
-    yields the bucket id (e.g. 'in.c-duckdbtest-abc123'), and deletes
-    it in teardown even if the test fails.
+    Creates one `in.c-duckdbtest-{short_id}` bucket per test module via the
+    Storage API, yields the bucket id (e.g. 'in.c-duckdbtest-abc123'), and
+    deletes it in teardown even if tests fail.
+    Module-scoped: one bucket per test file for performance.
     Note: Storage API adds the 'c-' prefix automatically; we only pass the suffix.
     """
-    # Storage API adds 'c-' prefix automatically — do NOT include it manually
-    bucket_name = f"duckdbtest-{test_prefix.replace('_', '-').rstrip('-')}"
+    short_id = uuid.uuid4().hex[:8]
+    bucket_name = f"duckdbtest-{short_id}"
     bucket_info = storage_api.create_bucket("in", bucket_name, description="DuckDB E2E test bucket")
     bucket_id = bucket_info["id"]  # e.g. "in.c-duckdbtest-..."
     try:

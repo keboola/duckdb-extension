@@ -45,10 +45,12 @@ static std::string MapFromSnowflakeType(const std::string &raw_type, int precisi
         return "DATE";
     }
     if (t == "TIMESTAMP_NTZ" || t == "DATETIME" || t == "TIMESTAMP" ||
-        t == "TIMESTAMP WITHOUT TIME ZONE") {
+        t == "TIMESTAMP WITHOUT TIME ZONE" || t == "TIMESTAMP_LTZ") {
+        // TIMESTAMP_LTZ (local time zone) is stored as UTC in Snowflake;
+        // map to plain TIMESTAMP to avoid cast issues with Python datetime.
         return "TIMESTAMP";
     }
-    if (t == "TIMESTAMP_TZ" || t == "TIMESTAMP_LTZ" ||
+    if (t == "TIMESTAMP_TZ" ||
         t == "TIMESTAMP WITH TIME ZONE" || t == "TIMESTAMP WITH LOCAL TIME ZONE") {
         return "TIMESTAMPTZ";
     }

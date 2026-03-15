@@ -41,12 +41,6 @@ public:
         int64_t limit = -1,
         const std::vector<std::string> &all_column_names = {});
 
-private:
-    //! Convert a single TableFilter on the given column to a SQL expression string.
-    //! Returns empty string if the filter type is not supported (caller should skip it).
-    static std::string FilterToSql(const std::string &col_name,
-                                   const TableFilter &filter);
-
     //! Quote an identifier with double-quotes, escaping internal double-quotes.
     static std::string EscapeIdentifier(const std::string &name);
 
@@ -56,6 +50,12 @@ private:
     //! Convert a DuckDB Value to its SQL literal representation.
     //! Numeric/boolean values are unquoted; strings are single-quoted.
     static std::string ValueToSqlLiteral(const Value &val);
+
+private:
+    //! Convert a single TableFilter on the given column to a SQL expression string.
+    //! Returns empty string if the filter type is not supported (caller should skip it).
+    static std::string FilterToSql(const std::string &col_name,
+                                   const TableFilter &filter);
 };
 
 } // namespace duckdb

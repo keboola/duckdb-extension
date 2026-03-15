@@ -59,7 +59,7 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
                                           AttachedDatabase &db,
                                           const string &name,
                                           AttachInfo &info,
-                                          AttachOptions & /*options*/) {
+                                          AttachOptions &options) {
     std::string token;
     std::string url;
     std::string branch;
@@ -175,8 +175,11 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
 
     // If SNAPSHOT mode was requested, mark the connection so each table is lazily
     // pulled into local storage on first scan (instead of eagerly pulling all tables).
+    // Also override the access mode to READ_WRITE so that INSERT/UPDATE/DELETE still
+    // work — SNAPSHOT only changes how SELECT reads data (local cache vs. live query).
     if (snapshot_mode) {
         catalog->GetConnection()->snapshot_mode = true;
+        options.access_mode = AccessMode::READ_WRITE;
     }
 
     return catalog;

@@ -13,17 +13,29 @@
 
 namespace duckdb {
 
+// NULL sentinel: Unicode Private Use Area character U+E000 (UTF-8: 0xEE 0x80 0x80).
+// Used only for VARCHAR NULL values so that NULL and empty string are distinguishable
+// even in Keboola's untyped (string) tables where the CSV importer cannot convert
+// empty fields to SQL NULL.  Non-VARCHAR NULLs still use an unquoted empty field,
+// which is correctly stored as NULL by Keboola's Snowflake backend for typed columns.
+static const std::string kNullSentinel = "\xEE\x80\x80";
+
 // ---------------------------------------------------------------------------
 // QuoteField — RFC 4180
 // ---------------------------------------------------------------------------
 
 std::string CsvBuilder::QuoteField(const std::string &field) {
-    // Check whether quoting is needed
-    bool needs_quoting = false;
-    for (char c : field) {
-        if (c == ',' || c == '"' || c == '\n' || c == '\r') {
-            needs_quoting = true;
-            break;
+    // Check whether quoting is needed:
+    // - empty string must be quoted ("") so it remains a distinct empty value and
+    //   cannot be confused with an unquoted NULL-sentinel field.
+    // - fields containing CSV special characters always need quoting.
+    bool needs_quoting = field.empty();
+    if (!needs_quoting) {
+        for (char c : field) {
+            if (c == ',' || c == '"' || c == '\n' || c == '\r') {
+                needs_quoting = true;
+                break;
+            }
         }
     }
 
@@ -52,7 +64,8 @@ std::string CsvBuilder::QuoteField(const std::string &field) {
 
 std::string CsvBuilder::ValueToString(const Value &val) {
     if (val.IsNull()) {
-        // NULL → empty field (no quotes)
+        // NULL → empty field (no quotes); callers that need VARCHAR NULL
+        // should use the kNullSentinel path in AddChunk instead.
         return "";
     }
 
@@ -72,14 +85,15 @@ std::string CsvBuilder::ValueToString(const Value &val) {
         case LogicalTypeId::TIMESTAMP_SEC:
         case LogicalTypeId::TIMESTAMP_MS:
         case LogicalTypeId::TIMESTAMP_NS: {
-            // Format: YYYY-MM-DD HH:MM:SS
+            // Format: YYYY-MM-DD HH:MM:SS+00:00
+            // Append UTC offset so Snowflake TIMESTAMP_LTZ columns store in UTC.
             timestamp_t ts = val.GetValue<timestamp_t>();
-            return Timestamp::ToString(ts);
+            return Timestamp::ToString(ts) + " +00:00";
         }
 
         case LogicalTypeId::TIMESTAMP_TZ: {
             timestamp_t ts = val.GetValue<timestamp_t>();
-            return Timestamp::ToString(ts);
+            return Timestamp::ToString(ts) + " +00:00";
         }
 
         default:
@@ -138,7 +152,18 @@ void CsvBuilder::AddChunk(const DataChunk &chunk, const std::vector<std::string>
 
             Value val = chunk.data[col_idx].GetValue(row_idx);
             if (val.IsNull()) {
-                // NULL → empty field (no quoting)
+                if (val.type().id() == LogicalTypeId::VARCHAR) {
+                    // VARCHAR NULL: write the private-use sentinel so NULL is
+                    // distinguishable from an empty-string value in Keboola's
+                    // untyped (all-string) tables that do not support SQL NULL.
+                    buffer_ << kNullSentinel;
+                }
+                // Non-VARCHAR NULL: write an unquoted empty field.
+                // For Keboola typed nullable columns (BIGINT, DOUBLE, …) the
+                // Snowflake backend converts unquoted-empty to SQL NULL automatically
+                // (EMPTY_FIELD_AS_NULL = TRUE).  For untyped tables the empty string
+                // round-trips to an empty string which StringToValue() already
+                // converts to a typed NULL via the stoll/stod exception path.
             } else {
                 buffer_ << QuoteField(ValueToString(val));
             }
