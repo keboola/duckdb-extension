@@ -11,6 +11,8 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/table_filter.hpp"
+#include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 
 #include <string>
@@ -74,7 +76,15 @@ static LogicalType TypeStringToLogicalType(const std::string &type_str) {
 // String → DuckDB Value conversion
 // ---------------------------------------------------------------------------
 
+// NULL sentinel written by CsvBuilder for VARCHAR NULL values.
+// U+E000 is a Unicode Private Use Area character (UTF-8: 0xEE 0x80 0x80).
+static const char *kNullSentinel = "\xEE\x80\x80";
+
 static Value StringToValue(const string &str, const LogicalType &type) {
+    // Convert the NULL sentinel back to a proper NULL value regardless of type.
+    if (str == kNullSentinel) {
+        return Value(type);
+    }
     switch (type.id()) {
         case LogicalTypeId::VARCHAR:
             return Value(str);
@@ -120,11 +130,25 @@ static Value StringToValue(const string &str, const LogicalType &type) {
 
         case LogicalTypeId::DATE:
             try { return Value::DATE(Date::FromString(str)); }
-            catch (...) { return Value(type); }
+            catch (...) {
+                // GCP/BigQuery backend returns DATE as integer days-since-epoch
+                try { return Value::DATE(date_t(std::stoi(str))); }
+                catch (...) {}
+                return Value(type);
+            }
 
         case LogicalTypeId::TIMESTAMP:
             try { return Value::TIMESTAMP(Timestamp::FromString(str, false)); }
-            catch (...) { return Value(type); }
+            catch (...) {
+                // GCP Keboola backend returns TIMESTAMP as float seconds-since-epoch
+                // (e.g. "1710433613.000000000"). Convert to DuckDB microseconds.
+                try {
+                    double secs = std::stod(str);
+                    int64_t us = static_cast<int64_t>(secs * 1000000.0);
+                    return Value::TIMESTAMP(timestamp_t(us));
+                } catch (...) {}
+                return Value(type);
+            }
 
         case LogicalTypeId::TIMESTAMP_TZ:
             try { return Value::TIMESTAMPTZ(timestamp_tz_t(Timestamp::FromString(str, true))); }
@@ -137,6 +161,96 @@ static Value StringToValue(const string &str, const LogicalType &type) {
         default:
             return Value(str); // fallback to VARCHAR
     }
+}
+
+// ---------------------------------------------------------------------------
+// Filter evaluation for snapshot rows
+// ---------------------------------------------------------------------------
+
+// Evaluate a single TableFilter against a cell value.
+// Returns true if the cell passes the filter, false if it should be excluded.
+static bool EvaluateTableFilter(const TableFilter &filter,
+                                  bool is_null,
+                                  const std::string &cell,
+                                  const LogicalType &ltype) {
+    switch (filter.filter_type) {
+        case TableFilterType::IS_NULL:
+            return is_null;
+        case TableFilterType::IS_NOT_NULL:
+            return !is_null;
+        case TableFilterType::CONSTANT_COMPARISON: {
+            if (is_null) {
+                return false;  // NULL doesn't match any constant comparison
+            }
+            const auto &cf = filter.Cast<ConstantFilter>();
+            Value row_val = StringToValue(cell, ltype);
+            if (row_val.IsNull()) {
+                return false;
+            }
+            // Cast row value to the filter constant's type for comparison
+            Value casted;
+            try {
+                casted = row_val.DefaultCastAs(cf.constant.type());
+            } catch (...) {
+                return false;
+            }
+            return cf.Compare(casted);
+        }
+        default:
+            return true;  // Unknown filter — pass through; DuckDB may re-check above
+    }
+}
+
+// Apply all pushed-down filters from `filters` to the snapshot rows, returning
+// a vector of indices of rows that pass all filters.
+static std::vector<idx_t> FilterSnapshotRows(
+    const TableFilterSet &filters,
+    const std::vector<std::vector<std::string>> &rows,
+    const std::vector<std::vector<bool>> &null_mask,
+    const std::vector<int> &data_col_map,
+    const std::vector<LogicalType> &col_types) {
+
+    std::vector<idx_t> result;
+    result.reserve(rows.size());
+
+    for (idx_t row_idx = 0; row_idx < rows.size(); row_idx++) {
+        const auto &row = rows[row_idx];
+        const auto *row_nulls = (row_idx < null_mask.size()) ? &null_mask[row_idx] : nullptr;
+
+        bool passes = true;
+        for (const auto &flt_kv : filters.filters) {
+            idx_t filter_col = flt_kv.first;
+
+            int dc = (filter_col < data_col_map.size()) ? data_col_map[filter_col]
+                                                        : static_cast<int>(filter_col);
+            if (dc < 0) {
+                // row-id virtual column — skip filter (row-ids always non-null)
+                continue;
+            }
+
+            bool is_null = false;
+            if (row_nulls && static_cast<idx_t>(dc) < row_nulls->size()) {
+                is_null = (*row_nulls)[static_cast<idx_t>(dc)];
+            }
+            if (static_cast<idx_t>(dc) >= row.size()) {
+                is_null = true;
+            }
+
+            const std::string &cell = is_null ? "" : row[static_cast<idx_t>(dc)];
+            const LogicalType &ltype = (filter_col < col_types.size())
+                                           ? col_types[filter_col]
+                                           : LogicalType::VARCHAR;
+
+            if (!EvaluateTableFilter(*flt_kv.second, is_null, cell, ltype)) {
+                passes = false;
+                break;
+            }
+        }
+        if (passes) {
+            result.push_back(row_idx);
+        }
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,14 +335,33 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
     }
 
     if (bind.is_snapshot && bind.snapshot_rows != nullptr) {
-        // Snapshot mode: use pre-fetched rows — no Query Service call
-        const auto &src_rows = *bind.snapshot_rows;
-        gstate->rows.resize(src_rows.size());
-        for (idx_t i = 0; i < src_rows.size(); i++) {
-            gstate->rows[i].assign(src_rows[i].begin(), src_rows[i].end());
-        }
-        if (bind.snapshot_null_mask != nullptr) {
-            const auto &src_mask = *bind.snapshot_null_mask;
+        // Snapshot mode: use pre-fetched rows — no Query Service call.
+        // Apply pushed-down filters so that WHERE clauses work correctly
+        // (DuckDB does not add a PhysicalFilter on top when filter_pushdown = true).
+        const auto &src_rows    = *bind.snapshot_rows;
+        const auto &src_mask    = bind.snapshot_null_mask ? *bind.snapshot_null_mask
+                                                           : std::vector<std::vector<bool>>{};
+        const TableFilterSet *filters = input.filters.get();
+
+        if (filters && !filters->filters.empty()) {
+            // Evaluate filters and collect passing row indices.
+            auto passing = FilterSnapshotRows(*filters, src_rows, src_mask,
+                                              gstate->data_col_map, gstate->column_types);
+            gstate->rows.resize(passing.size());
+            gstate->null_mask.resize(passing.size());
+            for (idx_t i = 0; i < passing.size(); i++) {
+                idx_t src = passing[i];
+                gstate->rows[i].assign(src_rows[src].begin(), src_rows[src].end());
+                if (src < src_mask.size()) {
+                    gstate->null_mask[i].assign(src_mask[src].begin(), src_mask[src].end());
+                }
+            }
+        } else {
+            // No filters — copy all rows.
+            gstate->rows.resize(src_rows.size());
+            for (idx_t i = 0; i < src_rows.size(); i++) {
+                gstate->rows[i].assign(src_rows[i].begin(), src_rows[i].end());
+            }
             gstate->null_mask.resize(src_mask.size());
             for (idx_t i = 0; i < src_mask.size(); i++) {
                 gstate->null_mask[i].assign(src_mask[i].begin(), src_mask[i].end());
@@ -239,12 +372,21 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
         // Get pushed-down filters
         const TableFilterSet *filters = input.filters.get();
 
+        // Build full column name list for correct WHERE clause column name resolution.
+        // Filter column indices are table-level positions; projected_names may be a subset.
+        std::vector<std::string> all_column_names;
+        all_column_names.reserve(all_cols.size());
+        for (const auto &col : all_cols) {
+            all_column_names.push_back(col.name);
+        }
+
         // Build SQL
         std::string sql = KeboolaSqlGenerator::BuildSelectSql(
             bind.table_info.id,
             projected_names,
             filters,
-            -1
+            -1,
+            all_column_names
         );
 
         QueryServiceClient qsc(

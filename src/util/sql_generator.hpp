@@ -26,15 +26,20 @@ class KeboolaSqlGenerator {
 public:
     //! Build a SELECT statement from table info + optional pushed-down filters + projected columns.
     //!
-    //! @param table_id      Keboola table ID, e.g. "in.c-crm.contacts"
-    //! @param columns       Projected column names. If empty, generates SELECT *.
-    //! @param filters       Pushed-down filters (may be null).
-    //! @param limit         Row limit (-1 = no limit).
+    //! @param table_id        Keboola table ID, e.g. "in.c-crm.contacts"
+    //! @param columns         Projected column names. If empty, generates SELECT *.
+    //! @param filters         Pushed-down filters (may be null).
+    //! @param limit           Row limit (-1 = no limit).
+    //! @param all_column_names Full table column list indexed by table column position,
+    //!                        used for WHERE clause column name resolution.
+    //!                        If empty, falls back to using `columns` (only correct when
+    //!                        all table columns are projected).
     static std::string BuildSelectSql(
         const std::string &table_id,
         const std::vector<std::string> &columns,
         const TableFilterSet *filters,
-        int64_t limit = -1);
+        int64_t limit = -1,
+        const std::vector<std::string> &all_column_names = {});
 
 private:
     //! Convert a single TableFilter on the given column to a SQL expression string.

@@ -167,7 +167,8 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
         const std::string &table_id,
         const std::vector<std::string> &columns,
         const TableFilterSet *filters,
-        int64_t limit) {
+        int64_t limit,
+        const std::vector<std::string> &all_column_names) {
 
     std::ostringstream sql;
 
@@ -201,18 +202,23 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
     }
     sql << EscapeIdentifier(table_part);
 
-    // WHERE clause from pushed-down filters
+    // WHERE clause from pushed-down filters.
+    // Filter column indices are table-level positions (not projected positions).
+    // Use all_column_names (full table column list) for name lookup when available;
+    // fall back to columns (projected list) only when all columns are projected.
     // DuckDB main (KEBOOLA_DUCKDB_NEW_FILTER_API=1): filters map is private;
     //   iterate via begin()/end() — entry.ColumnIndex() returns idx_t, entry.Filter() returns TableFilter&
     // DuckDB v1.5.0 (KEBOOLA_DUCKDB_NEW_FILTER_API=0): filters map is public as map<idx_t, unique_ptr<TableFilter>>
+    const std::vector<std::string> &filter_cols =
+        all_column_names.empty() ? columns : all_column_names;
 #if KEBOOLA_DUCKDB_NEW_FILTER_API
     if (filters && filters->HasFilters()) {
         std::vector<std::string> conditions;
         for (const auto &entry : *filters) {
             idx_t col_idx = entry.ColumnIndex();
             const TableFilter &tf = entry.Filter();
-            if (columns.empty() || col_idx >= columns.size()) continue;
-            std::string cond = FilterToSql(columns[col_idx], tf);
+            if (filter_cols.empty() || col_idx >= filter_cols.size()) continue;
+            std::string cond = FilterToSql(filter_cols[col_idx], tf);
             if (!cond.empty()) conditions.push_back(cond);
         }
         if (!conditions.empty()) {
@@ -229,8 +235,8 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
         for (const auto &kv : filters->filters) {
             idx_t col_idx = kv.first;
             const TableFilter &tf = *kv.second;
-            if (columns.empty() || col_idx >= columns.size()) continue;
-            std::string cond = FilterToSql(columns[col_idx], tf);
+            if (filter_cols.empty() || col_idx >= filter_cols.size()) continue;
+            std::string cond = FilterToSql(filter_cols[col_idx], tf);
             if (!cond.empty()) conditions.push_back(cond);
         }
         if (!conditions.empty()) {
