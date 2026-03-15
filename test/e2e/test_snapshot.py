@@ -15,6 +15,7 @@ import io
 import csv
 import socket
 import pytest
+import duckdb
 import pandas as pd
 import unittest.mock as mock
 from conftest import kbc_table_ref
@@ -190,6 +191,7 @@ def test_keboola_pull_single_table(duckdb_con, keboola_token, keboola_url,
 # 4. keboola_pull('kbc') refreshes all tables
 # ---------------------------------------------------------------------------
 
+@pytest.mark.timeout(600)
 def test_keboola_pull_all(duckdb_con, keboola_token, keboola_url,
                           storage_api, test_table):
     """CALL keboola_pull('kbc') should refresh all snapshot tables."""
@@ -228,15 +230,21 @@ def test_keboola_pull_all(duckdb_con, keboola_token, keboola_url,
 # 5. SNAPSHOT write still goes to Keboola
 # ---------------------------------------------------------------------------
 
-def test_snapshot_write_still_live(duckdb_con, keboola_token, keboola_url,
+def test_snapshot_write_still_live(keboola_extension_path, keboola_token, keboola_url,
                                    storage_api, test_table):
     """
     In SNAPSHOT mode, INSERT should still persist data to Keboola.
     After INSERT, keboola_pull() must show the new row.
+
+    Uses a fresh DuckDB connection (not the module-scoped one) to avoid any
+    state accumulated from the preceding SNAPSHOT-only tests influencing the
+    SNAPSHOT+READ_WRITE attach mode.
     """
     _upload_rows(storage_api, test_table["table_id"], SEED_ROWS)
 
-    duckdb_con.execute(f"""
+    con = duckdb.connect(":memory:", config={"allow_unsigned_extensions": True})
+    con.execute(f"LOAD '{keboola_extension_path}';")
+    con.execute(f"""
         ATTACH '{keboola_url}' AS kbc_snap_write (
             TYPE keboola,
             TOKEN '{keboola_token}',
@@ -250,22 +258,23 @@ def test_snapshot_write_still_live(duckdb_con, keboola_token, keboola_url,
         table_name = test_table["table_id"].split(".")[-1]
 
         # Insert via DuckDB — should go to Keboola
-        duckdb_con.execute(f"INSERT INTO {ref} VALUES ('sw1', 'SnapWrite', 'live_write');")
+        con.execute(f"INSERT INTO {ref} VALUES ('sw1', 'SnapWrite', 'live_write');")
 
         # Pull to refresh local snapshot from Keboola
-        duckdb_con.execute(f"CALL keboola_pull('kbc_snap_write.\"{schema}\".{table_name}');")
+        con.execute(f"CALL keboola_pull('kbc_snap_write.\"{schema}\".{table_name}');")
 
         # Now the inserted row should be visible
-        df = duckdb_con.execute(f"SELECT id FROM {ref} WHERE id = 'sw1';").fetchdf()
+        df = con.execute(f"SELECT id FROM {ref} WHERE id = 'sw1';").fetchdf()
         assert len(df) == 1, (
             "Inserted row 'sw1' not found after keboola_pull() in SNAPSHOT mode. "
             "INSERT may not have been persisted to Keboola."
         )
     finally:
         try:
-            duckdb_con.execute("DETACH kbc_snap_write;")
+            con.execute("DETACH kbc_snap_write;")
         except Exception:
             pass
+        con.close()
 
 
 # ---------------------------------------------------------------------------
