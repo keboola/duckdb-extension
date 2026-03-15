@@ -1,9 +1,7 @@
 #include "http/query_service_client.hpp"
+#include "http/yyjson_utils.hpp"
 
 #include "duckdb/common/exception.hpp"
-
-#include "yyjson.hpp"
-using namespace duckdb_yyjson; // NOLINT
 
 #include <chrono>
 #include <thread>
@@ -12,45 +10,8 @@ using namespace duckdb_yyjson; // NOLINT
 
 namespace duckdb {
 
-// ---------------------------------------------------------------------------
-// RAII yyjson document wrapper (same pattern as storage_api_client.cpp)
-// ---------------------------------------------------------------------------
-
-struct QSYyjsonDoc {
-    yyjson_doc *doc = nullptr;
-    explicit QSYyjsonDoc(yyjson_doc *d) : doc(d) {}
-    ~QSYyjsonDoc() {
-        if (doc) {
-            yyjson_doc_free(doc);
-        }
-    }
-    // movable, non-copyable
-    QSYyjsonDoc(QSYyjsonDoc &&other) noexcept : doc(other.doc) { other.doc = nullptr; }
-    QSYyjsonDoc &operator=(QSYyjsonDoc &&other) noexcept {
-        if (this != &other) {
-            if (doc) yyjson_doc_free(doc);
-            doc = other.doc;
-            other.doc = nullptr;
-        }
-        return *this;
-    }
-    QSYyjsonDoc(const QSYyjsonDoc &) = delete;
-    QSYyjsonDoc &operator=(const QSYyjsonDoc &) = delete;
-    bool ok() const { return doc != nullptr; }
-};
-
-static QSYyjsonDoc QSParseJson(const std::string &json_str, const std::string &ctx) {
-    yyjson_read_err err;
-    yyjson_doc *doc = yyjson_read_opts(const_cast<char *>(json_str.c_str()),
-                                       json_str.size(),
-                                       YYJSON_READ_NOFLAG,
-                                       nullptr,
-                                       &err);
-    if (!doc) {
-        throw IOException("Keboola QueryService: failed to parse JSON (%s): %s",
-                          ctx, err.msg ? err.msg : "unknown error");
-    }
-    return QSYyjsonDoc(doc);
+static YyjsonDoc QSParseJson(const std::string &json_str, const std::string &ctx) {
+    return ParseJson(json_str, ctx);
 }
 
 static std::string QSStrOr(yyjson_val *obj, const char *key, const char *def = "") {

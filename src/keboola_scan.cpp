@@ -91,35 +91,35 @@ static Value StringToValue(const string &str, const LogicalType &type) {
 
         case LogicalTypeId::TINYINT:
             try { return Value::TINYINT(static_cast<int8_t>(std::stoi(str))); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         case LogicalTypeId::SMALLINT:
             try { return Value::SMALLINT(static_cast<int16_t>(std::stoi(str))); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         case LogicalTypeId::INTEGER:
             try { return Value::INTEGER(std::stoi(str)); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         case LogicalTypeId::BIGINT:
             try { return Value::BIGINT(std::stoll(str)); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         case LogicalTypeId::UBIGINT:
             try { return Value::UBIGINT(std::stoull(str)); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         case LogicalTypeId::FLOAT:
             try { return Value::FLOAT(std::stof(str)); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         case LogicalTypeId::DOUBLE:
             try { return Value::DOUBLE(std::stod(str)); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         case LogicalTypeId::DECIMAL: {
             try { return Value::DOUBLE(std::stod(str)).DefaultCastAs(type); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
         }
 
         case LogicalTypeId::BOOLEAN:
@@ -130,33 +130,33 @@ static Value StringToValue(const string &str, const LogicalType &type) {
 
         case LogicalTypeId::DATE:
             try { return Value::DATE(Date::FromString(str)); }
-            catch (...) {
+            catch (const std::exception &) {
                 // GCP/BigQuery backend returns DATE as integer days-since-epoch
                 try { return Value::DATE(date_t(std::stoi(str))); }
-                catch (...) {}
+                catch (const std::exception &) {}
                 return Value(type);
             }
 
         case LogicalTypeId::TIMESTAMP:
             try { return Value::TIMESTAMP(Timestamp::FromString(str, false)); }
-            catch (...) {
+            catch (const std::exception &) {
                 // GCP Keboola backend returns TIMESTAMP as float seconds-since-epoch
                 // (e.g. "1710433613.000000000"). Convert to DuckDB microseconds.
                 try {
                     double secs = std::stod(str);
                     int64_t us = static_cast<int64_t>(secs * 1000000.0);
                     return Value::TIMESTAMP(timestamp_t(us));
-                } catch (...) {}
+                } catch (const std::exception &) {}
                 return Value(type);
             }
 
         case LogicalTypeId::TIMESTAMP_TZ:
             try { return Value::TIMESTAMPTZ(timestamp_tz_t(Timestamp::FromString(str, true))); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         case LogicalTypeId::TIME:
             try { return Value::TIME(Time::FromString(str)); }
-            catch (...) { return Value(type); }
+            catch (const std::exception &) { return Value(type); }
 
         default:
             return Value(str); // fallback to VARCHAR
@@ -191,7 +191,7 @@ static bool EvaluateTableFilter(const TableFilter &filter,
             Value casted;
             try {
                 casted = row_val.DefaultCastAs(cf.constant.type());
-            } catch (...) {
+            } catch (const std::exception &) {
                 return false;
             }
             return cf.Compare(casted);

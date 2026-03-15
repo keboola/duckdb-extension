@@ -9,8 +9,7 @@ namespace httplib = duckdb_httplib; // NOLINT
 #endif
 
 // yyjson is bundled with DuckDB — used to parse the async job response on GCP stacks.
-#include "yyjson.hpp"
-using namespace duckdb_yyjson; // NOLINT
+#include "http/yyjson_utils.hpp"
 
 #include "duckdb/common/exception.hpp"
 
@@ -125,13 +124,6 @@ int64_t ImporterClient::WriteTable(
         return 0; // not JSON — synchronous response, nothing to poll
     }
 
-    struct YyjsonDoc {
-        yyjson_doc *doc;
-        explicit YyjsonDoc(yyjson_doc *d) : doc(d) {}
-        ~YyjsonDoc() { if (doc) yyjson_doc_free(doc); }
-        YyjsonDoc(const YyjsonDoc &) = delete;
-        YyjsonDoc &operator=(const YyjsonDoc &) = delete;
-    };
     YyjsonDoc d{raw};
     yyjson_val *root = yyjson_doc_get_root(d.doc);
 
