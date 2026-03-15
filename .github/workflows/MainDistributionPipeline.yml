@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build against DuckDB stable (v1.5.0)
+  # Build against DuckDB stable (v1.5.0) — every push
   # ---------------------------------------------------------------------------
   duckdb-stable-build:
     name: Build (DuckDB v1.5.0 — Variegata)
@@ -23,7 +23,7 @@ jobs:
       enable_rust: false
 
   # ---------------------------------------------------------------------------
-  # Build against DuckDB main (nightly)
+  # Build against DuckDB main (nightly) — every push
   # ---------------------------------------------------------------------------
   duckdb-next-build:
     name: Build (DuckDB main)
@@ -35,13 +35,11 @@ jobs:
       enable_rust: false
 
   # ---------------------------------------------------------------------------
-  # Fast linux_amd64 build for E2E gate — starts immediately on tag push,
-  # finishes before Windows/WASM so e2e-gate can start sooner.
+  # Fast linux_amd64 build for E2E — every push
   # ---------------------------------------------------------------------------
-  e2e-linux-build:
-    name: Build linux_amd64 for E2E
+  build-linux:
+    name: Build linux_amd64
     runs-on: ubuntu-24.04
-    if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - uses: actions/checkout@v4
@@ -57,23 +55,24 @@ jobs:
       - name: Build extension
         run: make release
 
-      - name: Upload E2E artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: keboola-e2e-linux_amd64
+          name: keboola-linux_amd64
           path: build/release/extension/keboola/keboola.duckdb_extension
           retention-days: 3
 
   # ---------------------------------------------------------------------------
-  # E2E live tests — run on tag pushes as a release gate.
-  # Waits only for the fast linux build (not all platforms).
-  # Requires KEBOOLA_TOKEN and KEBOOLA_URL secrets to be configured.
-  # community-release will NOT proceed if this job fails.
+  # E2E live tests — every push
+  #
+  # Runs identically to local: no -n (sequential), no --timeout override.
+  # Timeout defaults come from test/e2e/pyproject.toml (120s global,
+  # 300s for slow tests via @pytest.mark.timeout).
+  # Tests skip automatically when KEBOOLA_TOKEN secret is not set.
   # ---------------------------------------------------------------------------
-  e2e-gate:
-    name: E2E release gate
-    needs: e2e-linux-build
-    if: startsWith(github.ref, 'refs/tags/v')
+  e2e:
+    name: E2E tests
+    needs: build-linux
     runs-on: ubuntu-latest
 
     env:
@@ -88,16 +87,8 @@ jobs:
       - name: Download linux_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: keboola-e2e-linux_amd64
+          name: keboola-linux_amd64
           path: artifacts/
-
-      - name: Check credentials are available
-        run: |
-          if [ -z "${KEBOOLA_TOKEN}" ]; then
-            echo "ERROR: KEBOOLA_TOKEN secret is not set — cannot run E2E gate."
-            echo "Add it in: Settings → Secrets and variables → Actions → New repository secret"
-            exit 1
-          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -110,14 +101,12 @@ jobs:
 
       - name: Run E2E pytest suite
         working-directory: test/e2e
+        # Same command as local: pytest . -v
+        # pyproject.toml adds: -x --tb=short timeout=120
+        # @pytest.mark.timeout(300) overrides for slow tests
         run: |
-          uv run pytest . \
-            -m live \
-            -n 4 \
-            --timeout=120 \
-            -v \
-            --tb=short \
-            --junitxml=${{ github.workspace }}/test-results/e2e-gate.xml
+          uv run pytest . -m live -v \
+            --junitxml=${{ github.workspace }}/test-results/e2e.xml
         env:
           KEBOOLA_TOKEN: ${{ env.KEBOOLA_TOKEN }}
           KEBOOLA_URL: ${{ env.KEBOOLA_URL }}
@@ -127,19 +116,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-gate-results
+          name: e2e-results
           path: test-results/
-          retention-days: 30
+          retention-days: 14
 
   # ---------------------------------------------------------------------------
-  # Community extension release — fires only on version tag pushes
-  # Blocked until build + E2E gate both pass.
+  # Community extension release — tag pushes only, blocked by build + E2E
   # ---------------------------------------------------------------------------
   community-release:
     name: Community Extension Release
     needs:
       - duckdb-stable-build
-      - e2e-gate
+      - e2e
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -147,7 +135,6 @@ jobs:
         with:
           submodules: recursive
 
-      # Download all platform artifacts for the stable build
       - name: Download all stable build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -155,7 +142,6 @@ jobs:
           path: artifacts/stable/
           merge-multiple: false
 
-      # Upload to S3 via the duckdb extension distribution mechanism
       - name: Deploy to S3 (stable)
         if: env.AWS_ACCESS_KEY_ID != ''
         env:
