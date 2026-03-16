@@ -164,6 +164,7 @@ class KeboolaStorageApi:
             r = self.session.delete(
                 f"{self.base_url}/v2/storage{f'/buckets/{bucket_id}'}",
                 params={"force": int(force), "async": 1},
+                timeout=30,
             )
             if r.status_code == 404:
                 return  # already gone
@@ -313,6 +314,7 @@ def typed_test_table(storage_api, test_bucket, test_prefix):
     r = storage_api.session.post(
         f"{base_url}/v2/storage/buckets/{test_bucket}/tables-definition",
         json=payload,
+        timeout=30,
     )
     r.raise_for_status()
     table_info = r.json()

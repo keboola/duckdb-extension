@@ -40,7 +40,7 @@ def _upload_rows(storage_api, table_id: str, rows: list[dict]):
         f"{importer_url}/write-table",
         data={"tableId": table_id, "incremental": "0", "delimiter": ",", "enclosure": '"'},
         files={"data": ("data.csv", buf.getvalue().encode(), "text/csv")},
-        timeout=30,
+        timeout=120,
     )
     r.raise_for_status()
     # On GCP stacks the importer returns an async job — wait for it to complete.

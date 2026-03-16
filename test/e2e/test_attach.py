@@ -134,6 +134,7 @@ def test_attach_snapshot(duckdb_con, keboola_token, keboola_url,
             f"{importer_url}/write-table",
             data={"tableId": table_id, "incremental": "0", "delimiter": ",", "enclosure": '"'},
             files={"data": ("data.csv", csv_data.encode(), "text/csv")},
+            timeout=120,
         )
         # best-effort — if importer is not available we still exercise ATTACH SNAPSHOT
         r.raise_for_status() if r.status_code < 500 else None
