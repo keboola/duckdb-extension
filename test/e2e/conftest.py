@@ -152,8 +152,10 @@ class KeboolaStorageApi:
                               incremental: bool = False, max_retries: int = 3) -> None:
         """POST csv_data to the Keboola Importer /write-table endpoint with retry.
 
-        Uses a long read timeout (300s) and retries up to max_retries times with
+        Uses 90s read timeout per attempt and retries up to max_retries times with
         exponential backoff to handle slow GCP importer responses in CI.
+        With 3 retries the worst-case upload time is 3×90s + backoff ≈ 276s,
+        which fits within the 600s pytest timeout budget for update tests.
         Polls any returned async job to completion.
         """
         last_exc = None
@@ -170,7 +172,7 @@ class KeboolaStorageApi:
                         "enclosure": '"',
                     },
                     files={"data": ("data.csv", csv_data, "text/csv")},
-                    timeout=300,
+                    timeout=90,
                 )
                 r.raise_for_status()
                 resp = r.json() if r.content else {}
