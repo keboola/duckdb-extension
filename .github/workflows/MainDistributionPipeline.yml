@@ -134,6 +134,20 @@ jobs:
             done
           done
 
+      - name: Rename artifacts with platform suffix
+        run: |
+          mkdir -p artifacts/release
+          for platform_dir in artifacts/stable/*/; do
+            platform=$(basename "$platform_dir")
+            for f in "$platform_dir"*; do
+              [ -f "$f" ] || continue
+              filename=$(basename "$f")
+              ext="${filename##*.}"
+              base="${filename%.*}"
+              cp "$f" "artifacts/release/${base}-${platform}.${ext}"
+            done
+          done
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -151,4 +165,4 @@ jobs:
             See the [README](https://github.com/${{ github.repository }}/blob/main/README.md) for usage instructions.
           generate_release_notes: true
           files: |
-            artifacts/stable/**/*
+            artifacts/release/*
