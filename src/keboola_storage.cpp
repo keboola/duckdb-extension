@@ -65,12 +65,17 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
     std::string branch;
     std::string secret_name;
     bool snapshot_mode = false;
+    bool explicit_read_only = false;
 
     // Parse ATTACH options
     for (auto &entry : info.options) {
         const auto lower = StringUtil::Lower(entry.first);
-        if (lower == "type" || lower == "read_only" || lower == "read_write") {
+        if (lower == "type" || lower == "read_write") {
             // handled by DuckDB core
+        } else if (lower == "read_only") {
+            // Track explicit read-only so we can default to READ_WRITE otherwise
+            const auto val = StringUtil::Lower(entry.second.ToString());
+            explicit_read_only = !(val == "false" || val == "0");
         } else if (lower == "token") {
             token = entry.second.ToString();
         } else if (lower == "url") {
@@ -173,10 +178,16 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
 
     auto catalog = make_uniq<KeboolaCatalog>(db, std::move(conn), std::move(buckets));
 
+    // Default to READ_WRITE unless the user explicitly passed READ_ONLY true.
+    // DuckDB's default for external storage engines is READ_ONLY, which would
+    // silently block INSERT / UPDATE / DELETE without a clear error message.
+    if (!explicit_read_only) {
+        options.access_mode = AccessMode::READ_WRITE;
+    }
+
     // If SNAPSHOT mode was requested, mark the connection so each table is lazily
     // pulled into local storage on first scan (instead of eagerly pulling all tables).
-    // Also override the access mode to READ_WRITE so that INSERT/UPDATE/DELETE still
-    // work — SNAPSHOT only changes how SELECT reads data (local cache vs. live query).
+    // SNAPSHOT always implies READ_WRITE so that INSERT/UPDATE/DELETE still work.
     if (snapshot_mode) {
         catalog->GetConnection()->snapshot_mode = true;
         options.access_mode = AccessMode::READ_WRITE;

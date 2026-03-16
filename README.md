@@ -69,10 +69,12 @@ SELECT COUNT(*) FROM kbc."in.c-crm".contacts;
 
 ### Read-only mode
 
+By default, ATTACH opens the database in **read-write** mode (INSERT, UPDATE, DELETE, and DDL are allowed).  Pass `READ_ONLY true` to restrict the connection to SELECT only:
+
 ```sql
 ATTACH 'https://connection.keboola.com' AS kbc (
-    TYPE     keboola,
-    TOKEN    'my-storage-api-token',
+    TYPE      keboola,
+    TOKEN     'my-storage-api-token',
     READ_ONLY true
 );
 ```
@@ -231,10 +233,26 @@ The compiled extension is placed at:
 build/release/extension/keboola/keboola.duckdb_extension
 ```
 
-Load it directly in DuckDB (no signing required for local builds):
+Load it directly in DuckDB (local builds are unsigned — start DuckDB with the `-unsigned` flag):
+
+```bash
+duckdb -unsigned
+```
 
 ```sql
 LOAD 'build/release/extension/keboola/keboola.duckdb_extension';
+```
+
+### Installing a release binary
+
+Download the `.duckdb_extension` file for your platform from the [GitHub Releases](https://github.com/keboola/keboola-duckdb-extension/releases) page.  The release artifact is named `keboola.duckdb_extension` (e.g. `keboola-osx_arm64.duckdb_extension`). Rename it to `keboola.duckdb_extension` if necessary, then load it with the `-unsigned` flag:
+
+```bash
+duckdb -unsigned
+```
+
+```sql
+LOAD '/path/to/keboola.duckdb_extension';
 ```
 
 ---

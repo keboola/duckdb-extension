@@ -610,7 +610,8 @@ int64_t StorageApiClient::DeleteRows(const std::string &table_id,
 KeboolaTableInfo StorageApiClient::CreateTable(
     const std::string &bucket_id,
     const std::string &table_name,
-    const std::vector<std::pair<std::string, std::string>> &column_defs) {
+    const std::vector<std::pair<std::string, std::string>> &column_defs,
+    const std::vector<std::string> &primary_keys) {
 
     // Build JSON body for POST /v2/storage/buckets/{bucket_id}/tables-definition
     // {
@@ -644,7 +645,12 @@ KeboolaTableInfo StorageApiClient::CreateTable(
     std::string body = "{\"name\":\"";
     // Escape table name (basic — assume it's alphanumeric)
     body += table_name;
-    body += "\",\"primaryKeysNames\":[],\"columns\":[";
+    body += "\",\"primaryKeysNames\":[";
+    for (size_t i = 0; i < primary_keys.size(); i++) {
+        if (i > 0) body += ",";
+        body += "\"" + primary_keys[i] + "\"";
+    }
+    body += "],\"columns\":[";
 
     for (size_t i = 0; i < column_defs.size(); ++i) {
         if (i > 0) body += ",";
@@ -774,6 +780,10 @@ KeboolaTableInfo StorageApiClient::CreateTable(
             info.columns.push_back(std::move(col));
         }
     }
+
+    // Preserve primary key in the returned metadata so UPDATE can use it immediately
+    // without needing a round-trip to re-fetch the table from the Storage API.
+    info.primary_key = primary_keys;
 
     return info;
 }

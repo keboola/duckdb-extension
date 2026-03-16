@@ -24,6 +24,7 @@
 #include "duckdb/common/enums/on_entry_not_found.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
 #include "duckdb/parser/column_definition.hpp"
+#include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -239,9 +240,26 @@ optional_ptr<CatalogEntry> KeboolaSchemaEntry::CreateTable(
         col_defs.push_back({col.GetName(), col.GetType().ToString()});
     }
 
+    // Extract PRIMARY KEY columns from DDL constraints
+    std::vector<std::string> primary_keys;
+    for (const auto &constraint : create_info.constraints) {
+        if (constraint->type == ConstraintType::UNIQUE) {
+            const auto &uc = constraint->Cast<UniqueConstraint>();
+            if (uc.IsPrimaryKey()) {
+                if (uc.HasIndex()) {
+                    primary_keys.push_back(
+                        create_info.columns.GetColumn(uc.GetIndex()).GetName());
+                } else {
+                    primary_keys = uc.GetColumnNames();
+                }
+                break;
+            }
+        }
+    }
+
     // Create the table via Storage API
     KeboolaTableInfo table_info = connection_->storage_client->CreateTable(
-        bucket_.id, create_info.table, col_defs);
+        bucket_.id, create_info.table, col_defs, primary_keys);
 
     // Also update the local bucket_ tables list so it stays in sync
     bucket_.tables.push_back(table_info);

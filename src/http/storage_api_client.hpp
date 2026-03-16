@@ -97,10 +97,12 @@ public:
 
     //! Create a table in a bucket using the Storage API tables-definition endpoint.
     //! column_defs: vector of {column_name, duckdb_type_string} pairs.
+    //! primary_keys: column names to set as PRIMARY KEY in Keboola Storage.
     //! Returns the newly created table's metadata.
     KeboolaTableInfo CreateTable(const std::string &bucket_id,
                                   const std::string &table_name,
-                                  const std::vector<std::pair<std::string, std::string>> &column_defs);
+                                  const std::vector<std::pair<std::string, std::string>> &column_defs,
+                                  const std::vector<std::string> &primary_keys = {});
 
     //! Drop a table by its full table ID (e.g. "in.c-crm.contacts").
     //! Throws CatalogException if the table does not exist (404).
