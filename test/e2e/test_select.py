@@ -42,18 +42,7 @@ def _upload_rows(storage_api, table_id: str, rows: list[dict], incremental: bool
     if importer_url is None:
         pytest.skip("Importer service URL not available — cannot seed data for SELECT tests")
 
-    r = storage_api.session.post(
-        f"{importer_url}/write-table",
-        data={
-            "tableId": table_id,
-            "incremental": "1" if incremental else "0",
-            "delimiter": ",",
-            "enclosure": '"',
-        },
-        files={"data": ("data.csv", csv_data.encode(), "text/csv")},
-        timeout=120,
-    )
-    r.raise_for_status()
+    storage_api.importer_write_table(importer_url, table_id, csv_data.encode(), incremental=incremental)
 
 
 SEED_ROWS = [

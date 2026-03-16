@@ -148,6 +148,39 @@ class KeboolaStorageApi:
             time.sleep(poll_interval)
         raise TimeoutError(f"Storage API job {job_id} did not complete within {timeout}s")
 
+    def importer_write_table(self, importer_url: str, table_id: str, csv_data: bytes,
+                              incremental: bool = False, max_retries: int = 3) -> None:
+        """POST csv_data to the Keboola Importer /write-table endpoint with retry.
+
+        Uses a long read timeout (300s) and retries up to max_retries times with
+        exponential backoff to handle slow GCP importer responses in CI.
+        Polls any returned async job to completion.
+        """
+        last_exc = None
+        for attempt in range(max_retries):
+            if attempt > 0:
+                time.sleep(2 ** attempt)  # 2s, 4s, ...
+            try:
+                r = self.session.post(
+                    f"{importer_url}/write-table",
+                    data={
+                        "tableId": table_id,
+                        "incremental": "1" if incremental else "0",
+                        "delimiter": ",",
+                        "enclosure": '"',
+                    },
+                    files={"data": ("data.csv", csv_data, "text/csv")},
+                    timeout=300,
+                )
+                r.raise_for_status()
+                resp = r.json() if r.content else {}
+                if isinstance(resp, dict) and "id" in resp and "status" in resp:
+                    self.wait_for_job(str(resp["id"]))
+                return
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exc = e
+        raise last_exc
+
     def create_bucket(self, stage: str, bucket_name: str, description: str = "") -> dict:
         """Create a bucket and return the bucket info dict."""
         return self.post("/buckets", data={
