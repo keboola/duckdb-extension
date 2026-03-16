@@ -222,3 +222,73 @@ def test_nonexistent_table_raises(test_bucket, kbc):
     """Accessing a table that doesn't exist inside a valid schema must raise."""
     with pytest.raises(Exception):
         kbc.execute(f'SELECT * FROM kbc."{test_bucket}".this_table_does_not_exist_xyz;')
+
+
+# ---------------------------------------------------------------------------
+# 9. Auto-refresh: new table created after ATTACH is discoverable
+# ---------------------------------------------------------------------------
+
+@pytest.mark.timeout(120)
+def test_auto_refresh_new_table(test_bucket, kbc, storage_api, test_prefix):
+    """
+    A table created via Storage API *after* the kbc database was attached
+    must be accessible via SELECT without DETACH/ATTACH.
+
+    This exercises the lazy-refresh path in LookupEntry: on a cache miss,
+    the extension calls RefreshTables() and retries before giving up.
+    """
+    table_name = f"{test_prefix}autorefresh"
+    table_info = storage_api.create_table(
+        test_bucket,
+        table_name,
+        columns=["id", "name"],
+        primary_key=["id"],
+    )
+    table_id = table_info["id"]
+    try:
+        # SELECT must succeed without re-attaching — lazy refresh should kick in
+        count = kbc.execute(
+            f'SELECT COUNT(*) FROM kbc."{test_bucket}".{table_name};'
+        ).fetchone()[0]
+        assert count == 0, f"Expected empty table, got count={count}"
+    finally:
+        storage_api.delete_table(table_id)
+
+
+# ---------------------------------------------------------------------------
+# 10. Auto-refresh: new bucket/schema created after ATTACH is discoverable
+# ---------------------------------------------------------------------------
+
+@pytest.mark.timeout(120)
+def test_auto_refresh_new_schema(kbc, storage_api, test_prefix):
+    """
+    A bucket (schema) created via Storage API *after* the kbc database was
+    attached must appear in information_schema.schemata without re-attaching.
+
+    This exercises the lazy-refresh path in LookupSchema: on a cache miss,
+    the extension calls RefreshCatalog() and retries before throwing.
+    """
+    import uuid
+    short_id = uuid.uuid4().hex[:8]
+    bucket_name = f"duckdbtest-ar-{short_id}"
+    bucket_info = storage_api.create_bucket("in", bucket_name, description="auto-refresh test")
+    bucket_id = bucket_info["id"]  # e.g. "in.c-duckdbtest-ar-..."
+    try:
+        # Create a table inside the new bucket so we can SELECT from it
+        table_info = storage_api.create_table(
+            bucket_id,
+            f"{test_prefix}artable",
+            columns=["id", "val"],
+            primary_key=["id"],
+        )
+        table_id = table_info["id"]
+        table_name = table_id.split(".")[-1]
+        try:
+            count = kbc.execute(
+                f'SELECT COUNT(*) FROM kbc."{bucket_id}".{table_name};'
+            ).fetchone()[0]
+            assert count == 0, f"Expected empty table, got count={count}"
+        finally:
+            storage_api.delete_table(table_id)
+    finally:
+        storage_api.delete_bucket(bucket_id, force=True)
