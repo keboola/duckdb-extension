@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <unordered_set>
 
 namespace duckdb {
 
@@ -95,6 +96,14 @@ unique_ptr<GlobalSinkState> KeboolaUpdate::GetGlobalSinkState(ClientContext & /*
     gstate->set_columns = set_columns_;
     gstate->where_params = where_params_;
 
+    // Capture the authoritative column list from the table schema.
+    // Finalize() uses this to strip system columns (e.g. "_timestamp") that
+    // SELECT * via the Query Service may include but that are not part of the
+    // user-defined schema — GCP typed tables reject unknown columns on import.
+    for (const auto &col : table_info.columns) {
+        gstate->table_columns.push_back(col.name);
+    }
+
     return std::move(gstate);
 }
 
@@ -166,11 +175,52 @@ SinkFinalizeType KeboolaUpdate::Finalize(Pipeline & /*pipeline*/,
         return SinkFinalizeType::READY;
     }
 
-    // Build a name → column-index map from the Query Service result columns
+    // Build a name → column-index map from the Query Service result columns,
+    // filtering out any system columns not in the table schema (e.g. the
+    // internal "_timestamp" / "timestamp" column that GCP Query Service appends
+    // to SELECT * results but that typed tables reject on re-import).
+    //
+    // Strategy: build an allowed-set from table_columns, then keep only QS
+    // result columns whose name (case-insensitive) appears in that set.
+    // If table_columns is empty (shouldn't happen, but defensive), keep all.
+    std::unordered_set<std::string> allowed_cols;
+    for (const auto &c : gstate.table_columns) {
+        std::string lower = c;
+        for (char &ch : lower) ch = static_cast<char>(::tolower(static_cast<unsigned char>(ch)));
+        allowed_cols.insert(lower);
+    }
+
+    // Map: QS result index → output position; col_names = filtered column list
     std::vector<std::string> col_names;
-    col_names.reserve(result.columns.size());
-    for (const auto &col : result.columns) {
-        col_names.push_back(col.name);
+    std::vector<idx_t> keep_indices; // QS result column indices to retain
+    for (idx_t ci = 0; ci < result.columns.size(); ci++) {
+        const std::string &qsname = result.columns[ci].name;
+        std::string lower = qsname;
+        for (char &ch : lower) ch = static_cast<char>(::tolower(static_cast<unsigned char>(ch)));
+        if (allowed_cols.empty() || allowed_cols.count(lower)) {
+            col_names.push_back(qsname);
+            keep_indices.push_back(ci);
+        }
+    }
+
+    // Project rows and null_mask to the kept columns
+    if (keep_indices.size() < result.columns.size()) {
+        for (auto &row : result.rows) {
+            std::vector<std::string> filtered;
+            filtered.reserve(keep_indices.size());
+            for (idx_t ki : keep_indices) {
+                filtered.push_back(ki < row.size() ? row[ki] : "");
+            }
+            row = std::move(filtered);
+        }
+        for (auto &row_nulls : result.null_mask) {
+            std::vector<bool> filtered;
+            filtered.reserve(keep_indices.size());
+            for (idx_t ki : keep_indices) {
+                filtered.push_back(ki < row_nulls.size() ? row_nulls[ki] : false);
+            }
+            row_nulls = std::move(filtered);
+        }
     }
 
     // Build a map from SET column name to (col_index_in_result, new_value, is_null)

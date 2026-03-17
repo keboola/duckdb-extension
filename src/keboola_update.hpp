@@ -34,6 +34,10 @@ struct KeboolaUpdateSetColumn {
 struct KeboolaUpdateGlobalState : public GlobalSinkState {
     std::string table_id;
     std::vector<std::string> primary_key;
+    //! Authoritative column names from the Keboola table schema.
+    //! Used to filter out system columns (e.g. "_timestamp") that the Query
+    //! Service may return in SELECT * but that are not part of the user schema.
+    std::vector<std::string> table_columns;
     std::shared_ptr<KeboolaConnection> connection;
     std::vector<KeboolaUpdateSetColumn> set_columns;
     KeboolaDeleteParams where_params;
