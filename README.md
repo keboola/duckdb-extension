@@ -1,6 +1,6 @@
 # Keboola DuckDB Extension
 
-[![CI](https://github.com/keboola-rnd/keboola-duckdb-extension/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/keboola-rnd/keboola-duckdb-extension/actions/workflows/MainDistributionPipeline.yml)
+[![CI](https://github.com/keboola/duckdb-extension/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/keboola/duckdb-extension/actions/workflows/MainDistributionPipeline.yml)
 [![DuckDB](https://img.shields.io/badge/DuckDB-v1.5.0-yellow)](https://duckdb.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
