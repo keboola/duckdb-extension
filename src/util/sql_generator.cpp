@@ -72,8 +72,13 @@ std::string KeboolaSqlGenerator::ValueToSqlLiteral(const Value &val) {
         case LogicalTypeId::DOUBLE:
         case LogicalTypeId::DECIMAL:
             return val.ToString();
+        case LogicalTypeId::DATE:
+            return "DATE " + EscapeStringLiteral(val.ToString());
+        case LogicalTypeId::TIMESTAMP:
+        case LogicalTypeId::TIMESTAMP_TZ:
+            return "TIMESTAMP " + EscapeStringLiteral(val.ToString());
         default:
-            // VARCHAR, DATE, TIMESTAMP, etc. — quote as strings
+            // VARCHAR and other types — quote as strings
             return EscapeStringLiteral(val.ToString());
     }
 }
