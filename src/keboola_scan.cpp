@@ -346,8 +346,9 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
         // Apply pushed-down filters so that WHERE clauses work correctly
         // (DuckDB does not add a PhysicalFilter on top when filter_pushdown = true).
         const auto &src_rows    = *bind.snapshot_rows;
+        static const std::vector<std::vector<bool>> kEmptyMask;
         const auto &src_mask    = bind.snapshot_null_mask ? *bind.snapshot_null_mask
-                                                           : std::vector<std::vector<bool>>{};
+                                                           : kEmptyMask;
         const TableFilterSet *filters = input.filters.get();
 
 #if KEBOOLA_DUCKDB_NEW_FILTER_API
