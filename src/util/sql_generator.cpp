@@ -72,8 +72,17 @@ std::string KeboolaSqlGenerator::ValueToSqlLiteral(const Value &val) {
         case LogicalTypeId::DOUBLE:
         case LogicalTypeId::DECIMAL:
             return val.ToString();
+        case LogicalTypeId::DATE:
+            return "DATE " + EscapeStringLiteral(val.ToString());
+        case LogicalTypeId::TIMESTAMP:
+            return "TIMESTAMP " + EscapeStringLiteral(val.ToString());
+        case LogicalTypeId::TIMESTAMP_TZ:
+            // Leave as plain string — Snowflake implicitly casts to TIMESTAMP_TZ
+            // and preserves the timezone offset. Using TIMESTAMP keyword would
+            // create TIMESTAMP_NTZ (Snowflake default) and silently discard the offset.
+            return EscapeStringLiteral(val.ToString());
         default:
-            // VARCHAR, DATE, TIMESTAMP, etc. — quote as strings
+            // VARCHAR and other types — quote as strings
             return EscapeStringLiteral(val.ToString());
     }
 }
