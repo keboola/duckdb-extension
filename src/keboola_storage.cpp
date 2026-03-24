@@ -38,8 +38,21 @@ static std::mutex g_cleanup_mutex;
 static std::vector<WorkspaceCleanupEntry> g_cleanup_entries;
 static bool g_handlers_installed = false;
 
-static void RunWorkspaceCleanup() {
-    std::lock_guard<std::mutex> lock(g_cleanup_mutex);
+//! Run workspace cleanup under an already-held lock or a new lock.
+//! @param from_signal  If true, uses try_lock() to avoid deadlocking when a
+//!                     signal arrives while the mutex is already held.
+static void RunWorkspaceCleanup(bool from_signal = false) {
+    std::unique_lock<std::mutex> lock(g_cleanup_mutex, std::defer_lock);
+    if (from_signal) {
+        if (!lock.try_lock()) {
+            // Mutex is held (e.g. RegisterWorkspaceForCleanup in progress).
+            // Skip cleanup — the process is about to die anyway, and the
+            // atexit handler or next ATTACH's GC will clean up.
+            return;
+        }
+    } else {
+        lock.lock();
+    }
     for (auto &entry : g_cleanup_entries) {
         if (entry.workspace_id.empty()) continue;
         auto client = entry.client.lock();
@@ -54,18 +67,18 @@ static void RunWorkspaceCleanup() {
 }
 
 static void AtExitHandler() {
-    RunWorkspaceCleanup();
+    RunWorkspaceCleanup(/*from_signal=*/false);
 }
 
-static void SignalHandler(int /*sig*/) {
-    // Re-raise with default handler after cleanup.
+static void SignalHandler(int sig) {
+    // Best-effort cleanup before re-raising with the default handler.
     // NOTE: DeleteWorkspace uses HTTP which is not async-signal-safe,
     // but this is best-effort for graceful Ctrl-C scenarios where the
-    // process is about to exit anyway.
-    RunWorkspaceCleanup();
-    std::signal(SIGINT, SIG_DFL);
-    std::signal(SIGTERM, SIG_DFL);
-    std::raise(SIGINT);
+    // process is about to exit anyway.  We use try_lock() to avoid
+    // deadlocking if the signal arrived while the mutex was held.
+    RunWorkspaceCleanup(/*from_signal=*/true);
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
 }
 
 static void InstallCleanupHandlers() {

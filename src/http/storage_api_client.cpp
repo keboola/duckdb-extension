@@ -13,6 +13,8 @@
 #include <thread>
 #include <chrono>
 #include <random>
+#include <ctime>
+#include <cstdio>
 
 namespace duckdb {
 
@@ -390,6 +392,32 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace() {
 // CleanupStaleWorkspaces
 // ---------------------------------------------------------------------------
 
+//! Parse an ISO-8601 timestamp string (e.g. "2026-03-24T10:30:00+0000") into
+//! a time_t (seconds since epoch).  Returns 0 on failure.
+static std::time_t ParseIso8601(const std::string &ts) {
+    if (ts.empty()) return 0;
+    std::tm tm = {};
+    // Try "YYYY-MM-DDTHH:MM:SS" — covers both "...+0000" and "...Z" suffixes.
+    if (std::sscanf(ts.c_str(), "%d-%d-%dT%d:%d:%d",
+                    &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec) < 6) {
+        return 0;
+    }
+    tm.tm_year -= 1900;
+    tm.tm_mon  -= 1;
+    // Interpret as UTC
+#ifdef _WIN32
+    return _mkgmtime(&tm);
+#else
+    return timegm(&tm);
+#endif
+}
+
+// Workspaces older than this threshold are considered stale and eligible for
+// garbage collection.  Active sessions are typically short-lived, so 1 hour
+// is a safe margin that won't delete a concurrent user's workspace.
+static constexpr int64_t STALE_THRESHOLD_SECONDS = 3600; // 1 hour
+
 void StorageApiClient::CleanupStaleWorkspaces() {
     std::string body;
     try {
@@ -407,18 +435,36 @@ void StorageApiClient::CleanupStaleWorkspaces() {
     yyjson_val *root = yyjson_doc_get_root(d.doc);
     if (!yyjson_is_arr(root)) return;
 
-    // Collect IDs of workspaces matching our prefix.
-    // Also clean up legacy "duckdb-extension" workspaces from before this change.
+    std::time_t now = std::time(nullptr);
+
+    // Collect IDs of workspaces matching our prefix that are older than the
+    // stale threshold.  Also clean up legacy "duckdb-extension" workspaces
+    // from before this change (regardless of age — they are always orphaned).
     std::vector<std::string> stale_ids;
     size_t idx, max;
     yyjson_val *ws;
     yyjson_arr_foreach(root, idx, max, ws) {
         std::string ws_name = JsonStrOr(ws, "name");
-        if (ws_name.rfind(WORKSPACE_PREFIX, 0) == 0 || ws_name == "duckdb-extension") {
-            std::string ws_id = JsonIdOr(ws, "id");
-            if (!ws_id.empty()) {
-                stale_ids.push_back(ws_id);
-            }
+        bool is_legacy = (ws_name == "duckdb-extension");
+        bool is_session = (ws_name.rfind(WORKSPACE_PREFIX, 0) == 0);
+        if (!is_legacy && !is_session) continue;
+
+        std::string ws_id = JsonIdOr(ws, "id");
+        if (ws_id.empty()) continue;
+
+        if (is_legacy) {
+            // Legacy workspaces are always stale — they can't belong to a
+            // session using this new naming scheme.
+            stale_ids.push_back(ws_id);
+            continue;
+        }
+
+        // For session workspaces, only delete if older than the threshold.
+        // The API returns "createdTimestamp" in ISO-8601 format.
+        std::string created_ts = JsonStrOr(ws, "createdTimestamp");
+        std::time_t created = ParseIso8601(created_ts);
+        if (created > 0 && std::difftime(now, created) > STALE_THRESHOLD_SECONDS) {
+            stale_ids.push_back(ws_id);
         }
     }
 
