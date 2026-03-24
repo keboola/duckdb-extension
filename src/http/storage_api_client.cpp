@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <thread>
 #include <chrono>
+#include <random>
 
 namespace duckdb {
 
@@ -332,39 +333,36 @@ std::vector<KeboolaTableInfo> StorageApiClient::FetchBucketTables(const std::str
 }
 
 // ---------------------------------------------------------------------------
-// FindOrCreateWorkspace
+// Workspace name prefix for session-scoped workspaces.
+// Each ATTACH creates a unique workspace; stale ones are garbage-collected.
 // ---------------------------------------------------------------------------
 
-KeboolaWorkspaceInfo StorageApiClient::FindOrCreateWorkspace() {
-    std::string body;
-    try {
-        body = http_.Get("/v2/storage/workspaces");
-    } catch (const std::exception &e) {
-        throw IOException("Keboola connection failed (list workspaces): %s",
-                          std::string(e.what()));
-    }
+static constexpr const char *WORKSPACE_PREFIX = "duckdb-ext-";
 
-    auto d = ParseJson(body, "list-workspaces");
-    yyjson_val *root = yyjson_doc_get_root(d.doc);
+//! Generate a short random hex suffix for workspace names (8 hex chars).
+static std::string GenerateSessionSuffix() {
+    static thread_local std::mt19937 rng([] {
+        std::random_device rd;
+        return rd();
+    }());
+    std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
+    uint32_t val = dist(rng);
+    char buf[9];
+    std::snprintf(buf, sizeof(buf), "%08x", val);
+    return std::string(buf);
+}
 
-    if (yyjson_is_arr(root)) {
-        size_t idx, max;
-        yyjson_val *ws;
-        yyjson_arr_foreach(root, idx, max, ws) {
-            std::string ws_name = JsonStrOr(ws, "name");
-            if (ws_name == "duckdb-extension") {
-                KeboolaWorkspaceInfo info;
-                info.id   = JsonIdOr(ws, "id");
-                info.name = ws_name;
-                yyjson_val *conn = yyjson_obj_get(ws, "connection");
-                info.type = JsonStrOr(conn, "backend");
-                return info;
-            }
-        }
-    }
+// ---------------------------------------------------------------------------
+// CreateSessionWorkspace
+// ---------------------------------------------------------------------------
 
-    // Create a new workspace
-    std::string create_body = R"({"name":"duckdb-extension"})";
+KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace() {
+    // Best-effort: clean up orphaned workspaces from crashed sessions
+    CleanupStaleWorkspaces();
+
+    // Create a new workspace with a unique name
+    std::string ws_name = std::string(WORKSPACE_PREFIX) + GenerateSessionSuffix();
+    std::string create_body = "{\"name\":\"" + ws_name + "\"}";
     std::string create_resp;
     try {
         create_resp = http_.Post("/v2/storage/workspaces", create_body, "application/json");
@@ -386,6 +384,52 @@ KeboolaWorkspaceInfo StorageApiClient::FindOrCreateWorkspace() {
     }
 
     return info;
+}
+
+// ---------------------------------------------------------------------------
+// CleanupStaleWorkspaces
+// ---------------------------------------------------------------------------
+
+void StorageApiClient::CleanupStaleWorkspaces() {
+    std::string body;
+    try {
+        body = http_.Get("/v2/storage/workspaces");
+    } catch (...) {
+        return; // best-effort
+    }
+
+    yyjson_read_err err;
+    yyjson_doc *raw = yyjson_read_opts(const_cast<char *>(body.c_str()),
+                                       body.size(), YYJSON_READ_NOFLAG,
+                                       nullptr, &err);
+    if (!raw) return;
+    YyjsonDoc d(raw);
+    yyjson_val *root = yyjson_doc_get_root(d.doc);
+    if (!yyjson_is_arr(root)) return;
+
+    // Collect IDs of workspaces matching our prefix.
+    // Also clean up legacy "duckdb-extension" workspaces from before this change.
+    std::vector<std::string> stale_ids;
+    size_t idx, max;
+    yyjson_val *ws;
+    yyjson_arr_foreach(root, idx, max, ws) {
+        std::string ws_name = JsonStrOr(ws, "name");
+        if (ws_name.rfind(WORKSPACE_PREFIX, 0) == 0 || ws_name == "duckdb-extension") {
+            std::string ws_id = JsonIdOr(ws, "id");
+            if (!ws_id.empty()) {
+                stale_ids.push_back(ws_id);
+            }
+        }
+    }
+
+    // Delete each stale workspace (best-effort, errors swallowed)
+    for (const auto &ws_id : stale_ids) {
+        try {
+            DeleteWorkspace(ws_id);
+        } catch (...) {
+            // ignore — best-effort cleanup
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
