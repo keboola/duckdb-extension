@@ -251,7 +251,7 @@ GetColumnIdx(T v) { return static_cast<idx_t>(v); }
 
 template<typename T>
 static typename std::enable_if<!std::is_integral<T>::value, idx_t>::type
-GetColumnIdx(T v) { return static_cast<idx_t>(v.index); }
+GetColumnIdx(T v) { return static_cast<idx_t>(v.GetIndexUnsafe()); }
 
 //! Try to resolve the column name from a ColumnRef expression within a LogicalGet.
 static bool TryExtractColumnName(const Expression &expr,
@@ -681,7 +681,7 @@ static KeboolaDeleteParams ExtractDeleteParamsFromPhysicalScan(const PhysicalTab
         }
     }
     const auto &first_entry = *scan.table_filters->begin();
-    idx_t        rel_idx    = first_entry.GetIndex().GetPrimaryIndex();
+    idx_t        rel_idx    = first_entry.GetIndex().GetIndexUnsafe();
     const TableFilter &tf   = first_entry.Filter();
 #else
     const auto &tf_map = scan.table_filters->filters;

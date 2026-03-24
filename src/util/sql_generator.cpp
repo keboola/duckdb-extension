@@ -224,7 +224,7 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
     if (filters && filters->HasFilters()) {
         std::vector<std::string> conditions;
         for (const auto &entry : *filters) {
-            idx_t col_idx = entry.GetIndex().GetPrimaryIndex();
+            idx_t col_idx = entry.GetIndex().GetIndexUnsafe();
             const TableFilter &tf = entry.Filter();
             if (filter_cols.empty() || col_idx >= filter_cols.size()) continue;
             std::string cond = FilterToSql(filter_cols[col_idx], tf);
