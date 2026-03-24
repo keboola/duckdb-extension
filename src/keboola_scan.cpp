@@ -220,7 +220,7 @@ static std::vector<idx_t> FilterSnapshotRows(
         bool passes = true;
 #if KEBOOLA_DUCKDB_NEW_FILTER_API
         for (const auto &entry : filters) {
-            idx_t filter_col = entry.ColumnIndex();
+            idx_t filter_col = entry.GetIndex().GetPrimaryIndex();
             const TableFilter &tf = entry.Filter();
 #else
         for (const auto &flt_kv : filters.filters) {

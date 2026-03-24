@@ -681,7 +681,7 @@ static KeboolaDeleteParams ExtractDeleteParamsFromPhysicalScan(const PhysicalTab
         }
     }
     const auto &first_entry = *scan.table_filters->begin();
-    idx_t        rel_idx    = first_entry.ColumnIndex();
+    idx_t        rel_idx    = first_entry.GetIndex().GetPrimaryIndex();
     const TableFilter &tf   = first_entry.Filter();
 #else
     const auto &tf_map = scan.table_filters->filters;
