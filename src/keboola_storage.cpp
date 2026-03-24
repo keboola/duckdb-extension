@@ -14,7 +14,80 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
 
+#include <cstdlib>
+#include <mutex>
+#include <vector>
+#include <memory>
+
 namespace duckdb {
+
+// ---------------------------------------------------------------------------
+// Global shutdown-cleanup registry.
+// Each ATTACH stores its StorageApiClient + workspace_id so that the atexit
+// handler can delete the workspace even if DETACH was never called (exit(),
+// Python interpreter shutdown, etc.).
+//
+// We intentionally do NOT install signal handlers (SIGINT/SIGTERM) because
+// that would overwrite the host application's handlers.  In Python, for
+// example, SIGINT raises KeyboardInterrupt — replacing it would break user
+// expectations.  Instead we rely on:
+//   1. atexit handler — covers graceful shutdown (exit(), Python end-of-script)
+//   2. CleanupStaleWorkspaces() — garbage-collects orphaned workspaces from
+//      crashes / SIGKILL on the next ATTACH.
+// ---------------------------------------------------------------------------
+
+struct WorkspaceCleanupEntry {
+    // Must be shared_ptr (not weak_ptr) to keep the StorageApiClient alive
+    // until the atexit handler runs.  DuckDB destroys AttachedDatabase objects
+    // (and thus KeboolaCatalog → KeboolaConnection → StorageApiClient) before
+    // C-level atexit handlers execute, so a weak_ptr would already be expired.
+    std::shared_ptr<StorageApiClient> client;
+    std::string workspace_id;
+};
+
+static std::mutex g_cleanup_mutex;
+static std::vector<WorkspaceCleanupEntry> g_cleanup_entries;
+static bool g_handlers_installed = false;
+
+static void RunWorkspaceCleanup() {
+    std::lock_guard<std::mutex> lock(g_cleanup_mutex);
+    for (auto &entry : g_cleanup_entries) {
+        if (entry.workspace_id.empty() || !entry.client) continue;
+        try {
+            entry.client->DeleteWorkspace(entry.workspace_id);
+        } catch (...) {
+            // best-effort — swallow all errors
+        }
+    }
+    g_cleanup_entries.clear();
+}
+
+static void AtExitHandler() {
+    RunWorkspaceCleanup();
+}
+
+static void InstallCleanupHandlers() {
+    if (g_handlers_installed) return;
+    g_handlers_installed = true;
+    std::atexit(AtExitHandler);
+}
+
+static void RegisterWorkspaceForCleanup(std::shared_ptr<StorageApiClient> client,
+                                         const std::string &workspace_id) {
+    std::lock_guard<std::mutex> lock(g_cleanup_mutex);
+    InstallCleanupHandlers();
+    g_cleanup_entries.push_back({client, workspace_id});
+}
+
+void UnregisterWorkspaceFromCleanup(const std::string &workspace_id) {
+    std::lock_guard<std::mutex> lock(g_cleanup_mutex);
+    g_cleanup_entries.erase(
+        std::remove_if(g_cleanup_entries.begin(), g_cleanup_entries.end(),
+                       [&](const WorkspaceCleanupEntry &e) {
+                           return e.workspace_id == workspace_id;
+                       }),
+        g_cleanup_entries.end());
+}
 
 // ---------------------------------------------------------------------------
 // Helper: look up a named Keboola secret and extract TOKEN/URL/BRANCH
@@ -156,15 +229,21 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
                           std::string(e.what()));
     }
 
-    // Find or create workspace
+    // Create a session-scoped workspace (unique per ATTACH).
+    // Also garbage-collects orphaned workspaces from previous crashed sessions.
     try {
-        auto ws = conn->storage_client->FindOrCreateWorkspace();
+        auto ws = conn->storage_client->CreateSessionWorkspace();
         conn->workspace_id = ws.id;
     } catch (const IOException &e) {
         throw;
     } catch (const std::exception &e) {
         throw IOException("Failed to create Keboola workspace: %s", std::string(e.what()));
     }
+
+    // Register an atexit handler so the workspace is deleted even if DETACH
+    // is never called (e.g. exit(), Python shutdown).  Crashes / SIGKILL are
+    // handled by CleanupStaleWorkspaces() on the next ATTACH.
+    RegisterWorkspaceForCleanup(conn->storage_client, conn->workspace_id);
 
     // Load catalog metadata
     std::vector<KeboolaBucketInfo> buckets;

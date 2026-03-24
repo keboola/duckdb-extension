@@ -10,4 +10,8 @@ public:
     KeboolaStorageExtension();
 };
 
+//! Remove a workspace from the global atexit/signal cleanup registry.
+//! Called by OnDetach so we don't double-delete after an explicit DETACH.
+void UnregisterWorkspaceFromCleanup(const std::string &workspace_id);
+
 } // namespace duckdb

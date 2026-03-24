@@ -216,7 +216,7 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
     // Use all_column_names (full table column list) for name lookup when available;
     // fall back to columns (projected list) only when all columns are projected.
     // DuckDB main (KEBOOLA_DUCKDB_NEW_FILTER_API=1): filters map is private;
-    //   iterate via begin()/end() — entry.ColumnIndex() returns idx_t, entry.Filter() returns TableFilter&
+    //   iterate via begin()/end() — entry.GetIndex() returns ProjectionIndex, entry.Filter() returns TableFilter&
     // DuckDB v1.5.0 (KEBOOLA_DUCKDB_NEW_FILTER_API=0): filters map is public as map<idx_t, unique_ptr<TableFilter>>
     const std::vector<std::string> &filter_cols =
         all_column_names.empty() ? columns : all_column_names;
@@ -224,7 +224,7 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
     if (filters && filters->HasFilters()) {
         std::vector<std::string> conditions;
         for (const auto &entry : *filters) {
-            idx_t col_idx = entry.ColumnIndex();
+            idx_t col_idx = entry.GetIndex().GetIndexUnsafe();
             const TableFilter &tf = entry.Filter();
             if (filter_cols.empty() || col_idx >= filter_cols.size()) continue;
             std::string cond = FilterToSql(filter_cols[col_idx], tf);

@@ -2,6 +2,7 @@
 #include "keboola_insert.hpp"
 #include "keboola_update.hpp"
 #include "keboola_delete.hpp"
+#include "keboola_storage.hpp"
 #include "include/keboola_table.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -53,9 +54,10 @@ KeboolaCatalog::KeboolaCatalog(AttachedDatabase &db,
 // ---------------------------------------------------------------------------
 
 KeboolaCatalog::~KeboolaCatalog() {
-    // Workspace cleanup happens via OnDetach (which has a ClientContext).
-    // If destroyed without DETACH (e.g. crash), FindOrCreateWorkspace() will
-    // reuse the orphaned workspace on the next ATTACH.
+    // Workspace cleanup happens via OnDetach (explicit DETACH) or via the
+    // atexit / signal handlers registered in keboola_storage.cpp (graceful
+    // shutdown without DETACH).  Orphaned workspaces from hard crashes are
+    // garbage-collected at the next ATTACH by CleanupStaleWorkspaces().
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +251,7 @@ GetColumnIdx(T v) { return static_cast<idx_t>(v); }
 
 template<typename T>
 static typename std::enable_if<!std::is_integral<T>::value, idx_t>::type
-GetColumnIdx(T v) { return static_cast<idx_t>(v.index); }
+GetColumnIdx(T v) { return static_cast<idx_t>(v.GetIndexUnsafe()); }
 
 //! Try to resolve the column name from a ColumnRef expression within a LogicalGet.
 static bool TryExtractColumnName(const Expression &expr,
@@ -679,7 +681,7 @@ static KeboolaDeleteParams ExtractDeleteParamsFromPhysicalScan(const PhysicalTab
         }
     }
     const auto &first_entry = *scan.table_filters->begin();
-    idx_t        rel_idx    = first_entry.ColumnIndex();
+    idx_t        rel_idx    = first_entry.GetIndex().GetIndexUnsafe();
     const TableFilter &tf   = first_entry.Filter();
 #else
     const auto &tf_map = scan.table_filters->filters;
@@ -1017,6 +1019,9 @@ DatabaseSize KeboolaCatalog::GetDatabaseSize(ClientContext & /*context*/) {
 
 void KeboolaCatalog::OnDetach(ClientContext & /*context*/) {
     if (connection_ && connection_->storage_client && !connection_->workspace_id.empty()) {
+        // Unregister from the atexit/signal cleanup list first so we don't
+        // attempt a double-delete if the process exits after DETACH.
+        UnregisterWorkspaceFromCleanup(connection_->workspace_id);
         connection_->storage_client->DeleteWorkspace(connection_->workspace_id);
         connection_->workspace_id.clear();
     }

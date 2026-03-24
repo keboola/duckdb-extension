@@ -79,8 +79,13 @@ public:
     //! Faster than ListBuckets() when only one bucket needs refreshing.
     std::vector<KeboolaTableInfo> FetchBucketTables(const std::string &bucket_id);
 
-    //! Find an existing workspace tagged "duckdb-extension", or create a new one.
-    KeboolaWorkspaceInfo FindOrCreateWorkspace();
+    //! Create a new workspace with a unique session-specific name.
+    //! Also garbage-collects stale workspaces from previous crashed sessions.
+    KeboolaWorkspaceInfo CreateSessionWorkspace();
+
+    //! Delete stale "duckdb-ext-*" workspaces that were orphaned by crashed sessions.
+    //! Best-effort: errors are silently ignored.
+    void CleanupStaleWorkspaces();
 
     //! Delete a workspace by ID.
     void DeleteWorkspace(const std::string &workspace_id);

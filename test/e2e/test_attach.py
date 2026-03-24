@@ -237,17 +237,18 @@ def test_detach_cleans_workspace(duckdb_con, keboola_token, keboola_url, storage
 
 
 # ---------------------------------------------------------------------------
-# 8. Re-attach reuses workspace
+# 8. Sequential ATTACH/DETACH does not leak workspaces
 # ---------------------------------------------------------------------------
 
 @pytest.mark.timeout(300)
-def test_reattach_reuses_workspace(duckdb_con, keboola_token, keboola_url, storage_api):
+def test_sequential_attach_no_workspace_leak(duckdb_con, keboola_token, keboola_url, storage_api):
     """
-    Two sequential ATTACHes (with DETACH in between) should reuse the same
-    workspace rather than creating a new one each time.  After first ATTACH
-    the workspace is tagged 'duckdb-extension'; the second ATTACH must find
-    and reuse it (or at least not leave duplicate workspaces behind).
+    Two sequential ATTACHes (with DETACH in between) should each create a
+    unique session-scoped workspace.  After both DETACHes, no duckdb-ext-*
+    workspaces should remain.
     """
+    before_ids = {ws["id"] for ws in storage_api.list_workspaces()}
+
     # First ATTACH
     duckdb_con.execute(f"""
         ATTACH '{keboola_url}' AS kbc_first (
@@ -255,12 +256,12 @@ def test_reattach_reuses_workspace(duckdb_con, keboola_token, keboola_url, stora
             TOKEN '{keboola_token}'
         )
     """)
-    ws_after_first = {ws["id"]: ws for ws in storage_api.list_workspaces()}
+    ws_after_first = {ws["id"] for ws in storage_api.list_workspaces()}
+    new_first = ws_after_first - before_ids
+    assert len(new_first) >= 1, "First ATTACH must create a workspace"
     duckdb_con.execute("DETACH kbc_first;")
 
-    # Second ATTACH — the workspace from the first should be reused (not deleted on DETACH
-    # when the extension is designed to keep it, or re-created and reused if not).
-    # Regardless of strategy, we must not end up with unbounded workspace growth.
+    # Second ATTACH — creates a new workspace (not reused)
     duckdb_con.execute(f"""
         ATTACH '{keboola_url}' AS kbc_second (
             TYPE keboola,
@@ -268,14 +269,16 @@ def test_reattach_reuses_workspace(duckdb_con, keboola_token, keboola_url, stora
         )
     """)
     ws_after_second = {ws["id"] for ws in storage_api.list_workspaces()}
+    new_second = ws_after_second - before_ids
+    assert len(new_second) >= 1, "Second ATTACH must create a workspace"
     duckdb_con.execute("DETACH kbc_second;")
 
-    # After both detaches, no duckdb-extension workspaces should linger
+    # After both detaches, no duckdb-ext-* workspaces should linger
     remaining = storage_api.list_workspaces()
     duckdb_ws = [
         ws for ws in remaining
-        if "duckdb" in str(ws.get("name", "")).lower()
-        or "duckdb" in str(ws.get("description", "")).lower()
+        if str(ws.get("name", "")).startswith("duckdb-ext-")
+        or ws.get("name") == "duckdb-extension"
     ]
     assert len(duckdb_ws) == 0, (
         f"Expected 0 duckdb-tagged workspaces after both DETACHes, found: {duckdb_ws}"

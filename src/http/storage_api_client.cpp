@@ -12,6 +12,9 @@
 #include <unordered_map>
 #include <thread>
 #include <chrono>
+#include <random>
+#include <ctime>
+#include <cstdio>
 
 namespace duckdb {
 
@@ -332,39 +335,36 @@ std::vector<KeboolaTableInfo> StorageApiClient::FetchBucketTables(const std::str
 }
 
 // ---------------------------------------------------------------------------
-// FindOrCreateWorkspace
+// Workspace name prefix for session-scoped workspaces.
+// Each ATTACH creates a unique workspace; stale ones are garbage-collected.
 // ---------------------------------------------------------------------------
 
-KeboolaWorkspaceInfo StorageApiClient::FindOrCreateWorkspace() {
-    std::string body;
-    try {
-        body = http_.Get("/v2/storage/workspaces");
-    } catch (const std::exception &e) {
-        throw IOException("Keboola connection failed (list workspaces): %s",
-                          std::string(e.what()));
-    }
+static constexpr const char *WORKSPACE_PREFIX = "duckdb-ext-";
 
-    auto d = ParseJson(body, "list-workspaces");
-    yyjson_val *root = yyjson_doc_get_root(d.doc);
+//! Generate a short random hex suffix for workspace names (8 hex chars).
+static std::string GenerateSessionSuffix() {
+    static thread_local std::mt19937 rng([] {
+        std::random_device rd;
+        return rd();
+    }());
+    std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
+    uint32_t val = dist(rng);
+    char buf[9];
+    std::snprintf(buf, sizeof(buf), "%08x", val);
+    return std::string(buf);
+}
 
-    if (yyjson_is_arr(root)) {
-        size_t idx, max;
-        yyjson_val *ws;
-        yyjson_arr_foreach(root, idx, max, ws) {
-            std::string ws_name = JsonStrOr(ws, "name");
-            if (ws_name == "duckdb-extension") {
-                KeboolaWorkspaceInfo info;
-                info.id   = JsonIdOr(ws, "id");
-                info.name = ws_name;
-                yyjson_val *conn = yyjson_obj_get(ws, "connection");
-                info.type = JsonStrOr(conn, "backend");
-                return info;
-            }
-        }
-    }
+// ---------------------------------------------------------------------------
+// CreateSessionWorkspace
+// ---------------------------------------------------------------------------
 
-    // Create a new workspace
-    std::string create_body = R"({"name":"duckdb-extension"})";
+KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace() {
+    // Best-effort: clean up orphaned workspaces from crashed sessions
+    CleanupStaleWorkspaces();
+
+    // Create a new workspace with a unique name
+    std::string ws_name = std::string(WORKSPACE_PREFIX) + GenerateSessionSuffix();
+    std::string create_body = "{\"name\":\"" + ws_name + "\"}";
     std::string create_resp;
     try {
         create_resp = http_.Post("/v2/storage/workspaces", create_body, "application/json");
@@ -386,6 +386,134 @@ KeboolaWorkspaceInfo StorageApiClient::FindOrCreateWorkspace() {
     }
 
     return info;
+}
+
+// ---------------------------------------------------------------------------
+// CleanupStaleWorkspaces
+// ---------------------------------------------------------------------------
+
+//! Parse an ISO-8601 timestamp string (e.g. "2026-03-24T10:30:00+0000") into
+//! a time_t (seconds since epoch, UTC).  Returns 0 on failure.
+//! Handles timezone offsets like "+0200", "-0500", "+00:00", and "Z".
+static std::time_t ParseIso8601(const std::string &ts) {
+    if (ts.empty()) return 0;
+    std::tm tm = {};
+    // Parse "YYYY-MM-DDTHH:MM:SS"
+    int fields = std::sscanf(ts.c_str(), "%d-%d-%dT%d:%d:%d",
+                    &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec);
+    if (fields < 6) {
+        return 0;
+    }
+    tm.tm_year -= 1900;
+    tm.tm_mon  -= 1;
+
+    // Parse optional timezone offset after the seconds component.
+    // Look for '+' or '-' after the 'T' separator to find the offset.
+    int tz_offset_seconds = 0;
+    auto t_pos = ts.find('T');
+    if (t_pos != std::string::npos) {
+        // Find the last '+' or '-' after T (skip the T itself and the time digits)
+        std::string::size_type tz_pos = std::string::npos;
+        auto plus = ts.rfind('+');
+        auto minus = ts.rfind('-');
+        if (plus != std::string::npos && plus > t_pos + 1) tz_pos = plus;
+        if (minus != std::string::npos && minus > t_pos + 1) {
+            if (tz_pos == std::string::npos || minus > tz_pos) tz_pos = minus;
+        }
+        if (tz_pos != std::string::npos) {
+            int sign = (ts[tz_pos] == '+') ? 1 : -1;
+            int tz_hours = 0, tz_minutes = 0;
+            const char *tz_str = ts.c_str() + tz_pos + 1;
+            // Try "+HH:MM" or "-HH:MM" first (colon-separated)
+            if (std::sscanf(tz_str, "%d:%d", &tz_hours, &tz_minutes) >= 1) {
+                // sscanf with "%d:%d" handles both "02:00" and "0200" (stops at non-digit)
+                // but for "+0200" without colon, we get tz_hours=200, tz_minutes unset
+                // So detect: if tz_hours >= 100, it's compact HHMM format
+                if (tz_hours >= 100 || tz_hours <= -100) {
+                    tz_minutes = tz_hours % 100;
+                    tz_hours = tz_hours / 100;
+                }
+                tz_offset_seconds = sign * (tz_hours * 3600 + tz_minutes * 60);
+            }
+        }
+    }
+
+    // Convert to UTC epoch
+#ifdef _WIN32
+    std::time_t result = _mkgmtime(&tm);
+#else
+    std::time_t result = timegm(&tm);
+#endif
+    // Subtract the UTC offset to get true UTC
+    // e.g. "10:30:00+0200" means 08:30 UTC, so subtract +2h
+    result -= tz_offset_seconds;
+    return result;
+}
+
+// Workspaces older than this threshold are considered stale and eligible for
+// garbage collection.  Active sessions are typically short-lived, so 1 hour
+// is a safe margin that won't delete a concurrent user's workspace.
+static constexpr int64_t STALE_THRESHOLD_SECONDS = 3600; // 1 hour
+
+void StorageApiClient::CleanupStaleWorkspaces() {
+    std::string body;
+    try {
+        body = http_.Get("/v2/storage/workspaces");
+    } catch (...) {
+        return; // best-effort
+    }
+
+    yyjson_read_err err;
+    yyjson_doc *raw = yyjson_read_opts(const_cast<char *>(body.c_str()),
+                                       body.size(), YYJSON_READ_NOFLAG,
+                                       nullptr, &err);
+    if (!raw) return;
+    YyjsonDoc d(raw);
+    yyjson_val *root = yyjson_doc_get_root(d.doc);
+    if (!yyjson_is_arr(root)) return;
+
+    std::time_t now = std::time(nullptr);
+
+    // Collect IDs of workspaces matching our prefix that are older than the
+    // stale threshold.  Also clean up legacy "duckdb-extension" workspaces
+    // from before this change (regardless of age — they are always orphaned).
+    std::vector<std::string> stale_ids;
+    size_t idx, max;
+    yyjson_val *ws;
+    yyjson_arr_foreach(root, idx, max, ws) {
+        std::string ws_name = JsonStrOr(ws, "name");
+        bool is_legacy = (ws_name == "duckdb-extension");
+        bool is_session = (ws_name.rfind(WORKSPACE_PREFIX, 0) == 0);
+        if (!is_legacy && !is_session) continue;
+
+        std::string ws_id = JsonIdOr(ws, "id");
+        if (ws_id.empty()) continue;
+
+        if (is_legacy) {
+            // Legacy workspaces are always stale — they can't belong to a
+            // session using this new naming scheme.
+            stale_ids.push_back(ws_id);
+            continue;
+        }
+
+        // For session workspaces, only delete if older than the threshold.
+        // The API returns "createdTimestamp" in ISO-8601 format.
+        std::string created_ts = JsonStrOr(ws, "createdTimestamp");
+        std::time_t created = ParseIso8601(created_ts);
+        if (created > 0 && std::difftime(now, created) > STALE_THRESHOLD_SECONDS) {
+            stale_ids.push_back(ws_id);
+        }
+    }
+
+    // Delete each stale workspace (best-effort, errors swallowed)
+    for (const auto &ws_id : stale_ids) {
+        try {
+            DeleteWorkspace(ws_id);
+        } catch (...) {
+            // ignore — best-effort cleanup
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
