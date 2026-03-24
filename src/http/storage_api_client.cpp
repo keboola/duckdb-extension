@@ -423,11 +423,17 @@ static std::time_t ParseIso8601(const std::string &ts) {
         }
         if (tz_pos != std::string::npos) {
             int sign = (ts[tz_pos] == '+') ? 1 : -1;
-            int tz_val = 0;
-            if (std::sscanf(ts.c_str() + tz_pos + 1, "%d", &tz_val) == 1) {
-                // Handle both "+0200" (HHMM) and "+02" (HH) formats
-                int tz_hours = tz_val / 100;
-                int tz_minutes = tz_val % 100;
+            int tz_hours = 0, tz_minutes = 0;
+            const char *tz_str = ts.c_str() + tz_pos + 1;
+            // Try "+HH:MM" or "-HH:MM" first (colon-separated)
+            if (std::sscanf(tz_str, "%d:%d", &tz_hours, &tz_minutes) >= 1) {
+                // sscanf with "%d:%d" handles both "02:00" and "0200" (stops at non-digit)
+                // but for "+0200" without colon, we get tz_hours=200, tz_minutes unset
+                // So detect: if tz_hours >= 100, it's compact HHMM format
+                if (tz_hours >= 100 || tz_hours <= -100) {
+                    tz_minutes = tz_hours % 100;
+                    tz_hours = tz_hours / 100;
+                }
                 tz_offset_seconds = sign * (tz_hours * 3600 + tz_minutes * 60);
             }
         }
