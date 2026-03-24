@@ -37,7 +37,11 @@ namespace duckdb {
 // ---------------------------------------------------------------------------
 
 struct WorkspaceCleanupEntry {
-    std::weak_ptr<StorageApiClient> client;
+    // Must be shared_ptr (not weak_ptr) to keep the StorageApiClient alive
+    // until the atexit handler runs.  DuckDB destroys AttachedDatabase objects
+    // (and thus KeboolaCatalog → KeboolaConnection → StorageApiClient) before
+    // C-level atexit handlers execute, so a weak_ptr would already be expired.
+    std::shared_ptr<StorageApiClient> client;
     std::string workspace_id;
 };
 
@@ -48,11 +52,9 @@ static bool g_handlers_installed = false;
 static void RunWorkspaceCleanup() {
     std::lock_guard<std::mutex> lock(g_cleanup_mutex);
     for (auto &entry : g_cleanup_entries) {
-        if (entry.workspace_id.empty()) continue;
-        auto client = entry.client.lock();
-        if (!client) continue;
+        if (entry.workspace_id.empty() || !entry.client) continue;
         try {
-            client->DeleteWorkspace(entry.workspace_id);
+            entry.client->DeleteWorkspace(entry.workspace_id);
         } catch (...) {
             // best-effort — swallow all errors
         }
