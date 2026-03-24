@@ -14,7 +14,6 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
 
-#include <csignal>
 #include <cstdlib>
 #include <mutex>
 #include <vector>
@@ -24,9 +23,17 @@ namespace duckdb {
 
 // ---------------------------------------------------------------------------
 // Global shutdown-cleanup registry.
-// Each ATTACH stores its StorageApiClient + workspace_id so that atexit /
-// signal handlers can delete the workspace even if DETACH was never called
-// (Ctrl-C, exit(), Python interpreter shutdown, etc.).
+// Each ATTACH stores its StorageApiClient + workspace_id so that the atexit
+// handler can delete the workspace even if DETACH was never called (exit(),
+// Python interpreter shutdown, etc.).
+//
+// We intentionally do NOT install signal handlers (SIGINT/SIGTERM) because
+// that would overwrite the host application's handlers.  In Python, for
+// example, SIGINT raises KeyboardInterrupt — replacing it would break user
+// expectations.  Instead we rely on:
+//   1. atexit handler — covers graceful shutdown (exit(), Python end-of-script)
+//   2. CleanupStaleWorkspaces() — garbage-collects orphaned workspaces from
+//      crashes / SIGKILL on the next ATTACH.
 // ---------------------------------------------------------------------------
 
 struct WorkspaceCleanupEntry {
@@ -38,21 +45,8 @@ static std::mutex g_cleanup_mutex;
 static std::vector<WorkspaceCleanupEntry> g_cleanup_entries;
 static bool g_handlers_installed = false;
 
-//! Run workspace cleanup under an already-held lock or a new lock.
-//! @param from_signal  If true, uses try_lock() to avoid deadlocking when a
-//!                     signal arrives while the mutex is already held.
-static void RunWorkspaceCleanup(bool from_signal = false) {
-    std::unique_lock<std::mutex> lock(g_cleanup_mutex, std::defer_lock);
-    if (from_signal) {
-        if (!lock.try_lock()) {
-            // Mutex is held (e.g. RegisterWorkspaceForCleanup in progress).
-            // Skip cleanup — the process is about to die anyway, and the
-            // atexit handler or next ATTACH's GC will clean up.
-            return;
-        }
-    } else {
-        lock.lock();
-    }
+static void RunWorkspaceCleanup() {
+    std::lock_guard<std::mutex> lock(g_cleanup_mutex);
     for (auto &entry : g_cleanup_entries) {
         if (entry.workspace_id.empty()) continue;
         auto client = entry.client.lock();
@@ -67,26 +61,13 @@ static void RunWorkspaceCleanup(bool from_signal = false) {
 }
 
 static void AtExitHandler() {
-    RunWorkspaceCleanup(/*from_signal=*/false);
-}
-
-static void SignalHandler(int sig) {
-    // Best-effort cleanup before re-raising with the default handler.
-    // NOTE: DeleteWorkspace uses HTTP which is not async-signal-safe,
-    // but this is best-effort for graceful Ctrl-C scenarios where the
-    // process is about to exit anyway.  We use try_lock() to avoid
-    // deadlocking if the signal arrived while the mutex was held.
-    RunWorkspaceCleanup(/*from_signal=*/true);
-    std::signal(sig, SIG_DFL);
-    std::raise(sig);
+    RunWorkspaceCleanup();
 }
 
 static void InstallCleanupHandlers() {
     if (g_handlers_installed) return;
     g_handlers_installed = true;
     std::atexit(AtExitHandler);
-    std::signal(SIGINT, SignalHandler);
-    std::signal(SIGTERM, SignalHandler);
 }
 
 static void RegisterWorkspaceForCleanup(std::shared_ptr<StorageApiClient> client,
@@ -257,8 +238,9 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
         throw IOException("Failed to create Keboola workspace: %s", std::string(e.what()));
     }
 
-    // Register an atexit / signal handler so the workspace is deleted even
-    // if DETACH is never called (e.g. Ctrl-C, exit(), Python shutdown).
+    // Register an atexit handler so the workspace is deleted even if DETACH
+    // is never called (e.g. exit(), Python shutdown).  Crashes / SIGKILL are
+    // handled by CleanupStaleWorkspaces() on the next ATTACH.
     RegisterWorkspaceForCleanup(conn->storage_client, conn->workspace_id);
 
     // Load catalog metadata

@@ -393,24 +393,56 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace() {
 // ---------------------------------------------------------------------------
 
 //! Parse an ISO-8601 timestamp string (e.g. "2026-03-24T10:30:00+0000") into
-//! a time_t (seconds since epoch).  Returns 0 on failure.
+//! a time_t (seconds since epoch, UTC).  Returns 0 on failure.
+//! Handles timezone offsets like "+0200", "-0500", "+00:00", and "Z".
 static std::time_t ParseIso8601(const std::string &ts) {
     if (ts.empty()) return 0;
     std::tm tm = {};
-    // Try "YYYY-MM-DDTHH:MM:SS" — covers both "...+0000" and "...Z" suffixes.
-    if (std::sscanf(ts.c_str(), "%d-%d-%dT%d:%d:%d",
+    // Parse "YYYY-MM-DDTHH:MM:SS"
+    int fields = std::sscanf(ts.c_str(), "%d-%d-%dT%d:%d:%d",
                     &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec) < 6) {
+                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec);
+    if (fields < 6) {
         return 0;
     }
     tm.tm_year -= 1900;
     tm.tm_mon  -= 1;
-    // Interpret as UTC
+
+    // Parse optional timezone offset after the seconds component.
+    // Look for '+' or '-' after the 'T' separator to find the offset.
+    int tz_offset_seconds = 0;
+    auto t_pos = ts.find('T');
+    if (t_pos != std::string::npos) {
+        // Find the last '+' or '-' after T (skip the T itself and the time digits)
+        std::string::size_type tz_pos = std::string::npos;
+        auto plus = ts.rfind('+');
+        auto minus = ts.rfind('-');
+        if (plus != std::string::npos && plus > t_pos + 1) tz_pos = plus;
+        if (minus != std::string::npos && minus > t_pos + 1) {
+            if (tz_pos == std::string::npos || minus > tz_pos) tz_pos = minus;
+        }
+        if (tz_pos != std::string::npos) {
+            int sign = (ts[tz_pos] == '+') ? 1 : -1;
+            int tz_val = 0;
+            if (std::sscanf(ts.c_str() + tz_pos + 1, "%d", &tz_val) == 1) {
+                // Handle both "+0200" (HHMM) and "+02" (HH) formats
+                int tz_hours = tz_val / 100;
+                int tz_minutes = tz_val % 100;
+                tz_offset_seconds = sign * (tz_hours * 3600 + tz_minutes * 60);
+            }
+        }
+    }
+
+    // Convert to UTC epoch
 #ifdef _WIN32
-    return _mkgmtime(&tm);
+    std::time_t result = _mkgmtime(&tm);
 #else
-    return timegm(&tm);
+    std::time_t result = timegm(&tm);
 #endif
+    // Subtract the UTC offset to get true UTC
+    // e.g. "10:30:00+0200" means 08:30 UTC, so subtract +2h
+    result -= tz_offset_seconds;
+    return result;
 }
 
 // Workspaces older than this threshold are considered stale and eligible for
