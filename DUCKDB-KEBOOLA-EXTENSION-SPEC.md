@@ -369,11 +369,26 @@ DELETE FROM kbc."in.c-crm".contacts
 
 ### 4.9 Workspace Lifecycle
 
-- **On ATTACH:** scan `GET /v2/storage/workspaces`, find workspace with name tag `duckdb-extension`. If not found, create one (`POST /v2/storage/workspaces`).
-- **Reuse:** store workspace ID in `KeboolaCatalog`, reuse across all Query Service calls.
-- **On DETACH / destructor:** call `DELETE /v2/storage/workspaces/{id}`.
-- **Cleanup on ATTACH:** if multiple old workspaces with tag `duckdb-extension` found, delete all but the newest.
-- **Crash recovery:** orphaned workspaces are cleaned up on next ATTACH.
+Each DuckDB session gets its own isolated workspace. This prevents one user's DETACH from breaking another user's active session on the same Keboola project.
+
+**Workspace naming:** `duckdb-ext-{8 hex chars}` (e.g. `duckdb-ext-a3f8b21c`). Each ATTACH always creates a new workspace with a random suffix via `POST /v2/storage/workspaces`.
+
+**Three cleanup mechanisms ensure no orphaned workspaces accumulate:**
+
+1. **On DETACH:** `DELETE /v2/storage/workspaces/{id}` — explicit cleanup when the user disconnects.
+
+2. **atexit handler:** Registered at ATTACH time. On graceful Python/process shutdown (`exit()`, end of script, interpreter teardown), the handler calls `DELETE /v2/storage/workspaces/{id}` even if DETACH was never called. Uses a `shared_ptr<StorageApiClient>` to keep the HTTP client alive past DuckDB's own teardown. Signal handlers (SIGINT/SIGTERM) are intentionally **not** installed to avoid overwriting the host application's handlers (e.g. Python's `KeyboardInterrupt`).
+
+3. **Stale workspace garbage collection:** Runs at the start of each ATTACH. Scans `GET /v2/storage/workspaces` for workspaces matching the `duckdb-ext-` prefix that are older than 1 hour (based on `createdTimestamp` from the API response). These are assumed to be orphans from crashed/killed sessions and are deleted. Legacy workspaces named exactly `"duckdb-extension"` (from the old shared-workspace approach) are always deleted regardless of age.
+
+**Lifecycle summary:**
+- **ATTACH** → `CreateSessionWorkspace("duckdb-ext-{random}")` + register atexit handler + run stale GC
+- **Normal operation** → workspace ID stored in `KeboolaCatalog`, reused for all Query Service calls
+- **DETACH** → unregister from atexit + `DELETE /v2/storage/workspaces/{id}`
+- **Graceful exit without DETACH** → atexit handler deletes workspace
+- **Crash / SIGKILL** → workspace becomes orphan, cleaned up by next session's stale GC
+
+**Concurrency:** Multiple users can safely ATTACH to the same Keboola project simultaneously. Each gets an independent workspace. DETACH by one user does not affect others.
 
 ### 4.10 SNAPSHOT Mode
 

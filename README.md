@@ -162,6 +162,24 @@ DROP SCHEMA kbc."out.c-results";
 
 ---
 
+## Workspace Lifecycle
+
+When you `ATTACH` a Keboola project, the extension creates a **dedicated workspace** for your session (named `duckdb-ext-{random}`). This workspace is used internally for Query Service operations.
+
+**Automatic cleanup — no manual action needed:**
+
+| Scenario | What happens |
+|----------|-------------|
+| `DETACH` | Workspace is deleted immediately |
+| Python script ends / `exit()` | atexit handler deletes the workspace |
+| Crash / `kill -9` / OOM | Workspace becomes orphan; cleaned up automatically by the next `ATTACH` (workspaces older than 1 hour are garbage-collected) |
+
+**Concurrent usage is safe:** Multiple users (or scripts) can `ATTACH` to the same Keboola project simultaneously — each gets an independent workspace. One user's `DETACH` does not affect others.
+
+> **Tip:** If you want to ensure cleanup in long-running Jupyter sessions, call `DETACH kbc` when done, or simply close the notebook — the atexit handler will take care of it.
+
+---
+
 ## Utility Functions
 
 ```sql
