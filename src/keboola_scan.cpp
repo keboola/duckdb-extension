@@ -480,9 +480,10 @@ bool KeboolaScanGlobalState::FetchNextPage() {
             return false;
         }
         return true;
-    } catch (const std::exception &) {
-        all_pages_fetched = true;
-        return false;
+    } catch (...) {
+        // Do not swallow — propagate so DuckDB surfaces the error instead of
+        // silently returning truncated results.
+        throw;
     }
 }
 
@@ -509,6 +510,8 @@ static void KeboolaScanFunction(ClientContext & /*context*/,
     idx_t count = 0;
     idx_t col_count = output.ColumnCount();
 
+    // NOTE: All page_position / page_rows access below is single-threaded
+    // (MaxThreads() == 1). No locking needed for read-side access.
     while (count < STANDARD_VECTOR_SIZE) {
         // Check if we need to fetch the next page
         if (gstate.page_position >= gstate.page_rows.size()) {

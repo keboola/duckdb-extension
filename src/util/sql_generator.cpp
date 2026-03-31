@@ -176,9 +176,12 @@ std::string KeboolaSqlGenerator::FilterToSql(const std::string &col_name,
                 const auto &func_expr = ef.expr->Cast<BoundFunctionExpression>();
                 const std::string &fname = func_expr.function.name;
 
-                // Recognize LIKE (~~) and ILIKE (~~*)
-                bool is_like  = (fname == "~~" || fname == "like_escape");
-                bool is_ilike = (fname == "~~*" || fname == "ilike_escape");
+                // Recognize simple LIKE (~~) and ILIKE (~~*) only.
+                // The like_escape/ilike_escape variants (3-arg with ESCAPE clause) are
+                // intentionally NOT pushed down because we cannot reliably forward the
+                // escape character — DuckDB will apply them locally instead.
+                bool is_like  = (fname == "~~");
+                bool is_ilike = (fname == "~~*");
 
                 if ((is_like || is_ilike) && func_expr.children.size() >= 2) {
                     // Second child should be the pattern constant

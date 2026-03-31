@@ -167,172 +167,34 @@ std::string QueryServiceClient::PollUntilDone(const std::string &job_id) {
 }
 
 // ---------------------------------------------------------------------------
-// FetchResults — paginated
+// ParseResultPageJson — shared JSON parsing for a single result page
 // ---------------------------------------------------------------------------
 
-QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id,
-                                                      const std::string &statement_id) {
-    QueryServiceResult result;
-    bool columns_populated = false;
-    int64_t offset = 0;
-
-    while (true) {
-        std::string path = "/api/v1/queries/" + job_id + "/" + statement_id + "/results"
-                           "?offset=" + std::to_string(offset) +
-                           "&pageSize=" + std::to_string(QUERY_PAGE_SIZE);
-
-        std::string resp;
-        try {
-            resp = http_.Get(path);
-        } catch (const std::exception &e) {
-            throw IOException("Keboola QueryService: failed to fetch results (offset=%lld): %s",
-                              static_cast<long long>(offset), std::string(e.what()));
-        }
-
-        auto d = QSParseJson(resp, "fetch-results");
-        yyjson_val *root = yyjson_doc_get_root(d.doc);
-
-        // Parse columns on first page
-        if (!columns_populated) {
-            yyjson_val *cols = yyjson_obj_get(root, "columns");
-            if (cols && yyjson_is_arr(cols)) {
-                size_t ci, cm;
-                yyjson_val *col;
-                yyjson_arr_foreach(cols, ci, cm, col) {
-                    QueryServiceColumn qsc;
-                    qsc.name = QSStrOr(col, "name");
-                    qsc.type = QSStrOr(col, "type");
-                    result.columns.push_back(std::move(qsc));
-                }
-            }
-
-            // Parse numberOfRows
-            yyjson_val *total_val = yyjson_obj_get(root, "numberOfRows");
-            if (total_val && yyjson_is_int(total_val)) {
-                result.total_rows = static_cast<int64_t>(yyjson_get_sint(total_val));
-            } else if (total_val && yyjson_is_uint(total_val)) {
-                result.total_rows = static_cast<int64_t>(yyjson_get_uint(total_val));
-            }
-
-            columns_populated = true;
-        }
-
-        // Parse data (array of arrays of strings/nulls)
-        yyjson_val *data = yyjson_obj_get(root, "data");
-        int64_t page_row_count = 0;
-        if (data && yyjson_is_arr(data)) {
-            size_t ri, rm;
-            yyjson_val *row;
-            yyjson_arr_foreach(data, ri, rm, row) {
-                if (!yyjson_is_arr(row)) continue;
-
-                std::vector<std::string> row_values;
-                std::vector<bool> row_nulls;
-
-                size_t ci, cm;
-                yyjson_val *cell;
-                yyjson_arr_foreach(row, ci, cm, cell) {
-                    if (yyjson_is_null(cell)) {
-                        row_values.push_back("");
-                        row_nulls.push_back(true);
-                    } else if (yyjson_is_str(cell)) {
-                        row_values.push_back(yyjson_get_str(cell));
-                        row_nulls.push_back(false);
-                    } else if (yyjson_is_int(cell)) {
-                        row_values.push_back(std::to_string(yyjson_get_sint(cell)));
-                        row_nulls.push_back(false);
-                    } else if (yyjson_is_uint(cell)) {
-                        row_values.push_back(std::to_string(yyjson_get_uint(cell)));
-                        row_nulls.push_back(false);
-                    } else if (yyjson_is_real(cell)) {
-                        row_values.push_back(std::to_string(yyjson_get_real(cell)));
-                        row_nulls.push_back(false);
-                    } else if (yyjson_is_bool(cell)) {
-                        row_values.push_back(yyjson_is_true(cell) ? "true" : "false");
-                        row_nulls.push_back(false);
-                    } else {
-                        row_values.push_back("");
-                        row_nulls.push_back(true);
-                    }
-                }
-
-                result.rows.push_back(std::move(row_values));
-                result.null_mask.push_back(std::move(row_nulls));
-                page_row_count++;
+int64_t QueryServiceClient::ParseResultPageJson(yyjson_val *root, QueryServiceResult &result,
+                                                  bool parse_columns) {
+    // Parse columns and numberOfRows (typically only on the first page)
+    if (parse_columns) {
+        yyjson_val *cols = yyjson_obj_get(root, "columns");
+        if (cols && yyjson_is_arr(cols)) {
+            size_t ci, cm;
+            yyjson_val *col;
+            yyjson_arr_foreach(cols, ci, cm, col) {
+                QueryServiceColumn qsc;
+                qsc.name = QSStrOr(col, "name");
+                qsc.type = QSStrOr(col, "type");
+                result.columns.push_back(std::move(qsc));
             }
         }
 
-        offset += page_row_count;
-
-        // Determine if there are more pages.
-        // Use numberOfRows if available, otherwise stop when page is empty.
-        if (result.total_rows > 0) {
-            if (offset >= result.total_rows) {
-                break;
-            }
-        } else {
-            // No numberOfRows — stop when page is empty
-            if (page_row_count == 0) {
-                break;
-            }
-        }
-
-        // Safety: if this page was empty, stop to avoid infinite loop
-        if (page_row_count == 0) {
-            break;
+        yyjson_val *total_val = yyjson_obj_get(root, "numberOfRows");
+        if (total_val && yyjson_is_int(total_val)) {
+            result.total_rows = static_cast<int64_t>(yyjson_get_sint(total_val));
+        } else if (total_val && yyjson_is_uint(total_val)) {
+            result.total_rows = static_cast<int64_t>(yyjson_get_uint(total_val));
         }
     }
 
-    result.has_more = false;
-    return result;
-}
-
-// ---------------------------------------------------------------------------
-// FetchResultPage — single page fetch for streaming
-// ---------------------------------------------------------------------------
-
-QueryServiceResult QueryServiceClient::FetchResultPage(const std::string &job_id,
-                                                        const std::string &statement_id,
-                                                        int64_t offset) {
-    QueryServiceResult result;
-
-    std::string path = "/api/v1/queries/" + job_id + "/" + statement_id + "/results"
-                       "?offset=" + std::to_string(offset) +
-                       "&pageSize=" + std::to_string(QUERY_PAGE_SIZE);
-
-    std::string resp;
-    try {
-        resp = http_.Get(path);
-    } catch (const std::exception &e) {
-        throw IOException("Keboola QueryService: failed to fetch results (offset=%lld): %s",
-                          static_cast<long long>(offset), std::string(e.what()));
-    }
-
-    auto d = QSParseJson(resp, "fetch-results-page");
-    yyjson_val *root = yyjson_doc_get_root(d.doc);
-
-    // Parse columns
-    yyjson_val *cols = yyjson_obj_get(root, "columns");
-    if (cols && yyjson_is_arr(cols)) {
-        size_t ci, cm;
-        yyjson_val *col;
-        yyjson_arr_foreach(cols, ci, cm, col) {
-            QueryServiceColumn qsc;
-            qsc.name = QSStrOr(col, "name");
-            qsc.type = QSStrOr(col, "type");
-            result.columns.push_back(std::move(qsc));
-        }
-    }
-
-    // Parse numberOfRows
-    yyjson_val *total_val = yyjson_obj_get(root, "numberOfRows");
-    if (total_val && yyjson_is_int(total_val)) {
-        result.total_rows = static_cast<int64_t>(yyjson_get_sint(total_val));
-    } else if (total_val && yyjson_is_uint(total_val)) {
-        result.total_rows = static_cast<int64_t>(yyjson_get_uint(total_val));
-    }
-
-    // Parse data
+    // Parse data (array of arrays of strings/nulls)
     yyjson_val *data = yyjson_obj_get(root, "data");
     int64_t page_row_count = 0;
     if (data && yyjson_is_arr(data)) {
@@ -376,6 +238,84 @@ QueryServiceResult QueryServiceClient::FetchResultPage(const std::string &job_id
             page_row_count++;
         }
     }
+
+    return page_row_count;
+}
+
+// ---------------------------------------------------------------------------
+// FetchResults — paginated (fetches all pages into one result)
+// ---------------------------------------------------------------------------
+
+QueryServiceResult QueryServiceClient::FetchResults(const std::string &job_id,
+                                                      const std::string &statement_id) {
+    QueryServiceResult result;
+    int64_t offset = 0;
+    bool first_page = true;
+
+    while (true) {
+        std::string path = "/api/v1/queries/" + job_id + "/" + statement_id + "/results"
+                           "?offset=" + std::to_string(offset) +
+                           "&pageSize=" + std::to_string(QUERY_PAGE_SIZE);
+
+        std::string resp;
+        try {
+            resp = http_.Get(path);
+        } catch (const std::exception &e) {
+            throw IOException("Keboola QueryService: failed to fetch results (offset=%lld): %s",
+                              static_cast<long long>(offset), std::string(e.what()));
+        }
+
+        auto d = QSParseJson(resp, "fetch-results");
+        yyjson_val *root = yyjson_doc_get_root(d.doc);
+
+        int64_t page_row_count = ParseResultPageJson(root, result, first_page);
+        first_page = false;
+        offset += page_row_count;
+
+        // Determine if there are more pages.
+        if (result.total_rows > 0) {
+            if (offset >= result.total_rows) {
+                break;
+            }
+        } else if (page_row_count == 0) {
+            break;
+        }
+
+        // Safety: if this page was empty, stop to avoid infinite loop
+        if (page_row_count == 0) {
+            break;
+        }
+    }
+
+    result.has_more = false;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// FetchResultPage — single page fetch for streaming
+// ---------------------------------------------------------------------------
+
+QueryServiceResult QueryServiceClient::FetchResultPage(const std::string &job_id,
+                                                        const std::string &statement_id,
+                                                        int64_t offset) {
+    QueryServiceResult result;
+
+    std::string path = "/api/v1/queries/" + job_id + "/" + statement_id + "/results"
+                       "?offset=" + std::to_string(offset) +
+                       "&pageSize=" + std::to_string(QUERY_PAGE_SIZE);
+
+    std::string resp;
+    try {
+        resp = http_.Get(path);
+    } catch (const std::exception &e) {
+        throw IOException("Keboola QueryService: failed to fetch results (offset=%lld): %s",
+                          static_cast<long long>(offset), std::string(e.what()));
+    }
+
+    auto d = QSParseJson(resp, "fetch-results-page");
+    yyjson_val *root = yyjson_doc_get_root(d.doc);
+
+    int64_t page_row_count = ParseResultPageJson(root, result, /*parse_columns=*/true);
 
     // Determine if there are more pages
     int64_t end_offset = offset + page_row_count;
