@@ -403,7 +403,7 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
         );
 
         // Create a persistent QueryServiceClient for streaming.
-        gstate->qsc = std::make_unique<QueryServiceClient>(
+        gstate->qsc = make_uniq<QueryServiceClient>(
             conn.service_urls.query_url,
             conn.token,
             conn.branch_id,

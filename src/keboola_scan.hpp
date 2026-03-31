@@ -61,7 +61,7 @@ struct KeboolaScanGlobalState : public GlobalTableFunctionState {
 
     // --- Streaming state (live mode) ---
     //! Query Service client for fetching subsequent pages.
-    std::unique_ptr<QueryServiceClient> qsc;
+    unique_ptr<QueryServiceClient> qsc;
     //! Job ID from Query Service (for fetching result pages).
     std::string job_id;
     //! Statement ID from Query Service.
