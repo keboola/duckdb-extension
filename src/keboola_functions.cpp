@@ -258,6 +258,13 @@ static unique_ptr<FunctionData> KeboolaPullBindFn(ClientContext &context,
     const std::string db_name = strip_quotes(parts[0]);
     auto &catalog = GetKeboolaCatalog(context, db_name);
 
+    // filter and changed_since are only supported for single-table pulls.
+    if (parts.size() < 3 && (!filter_clause.empty() || !changed_since.empty())) {
+        throw BinderException("keboola_pull: 'filter' and 'changed_since' parameters are only "
+                              "supported when pulling a single table "
+                              "(e.g. kbc.\"schema\".table)");
+    }
+
     auto bind_data = make_uniq<KeboolaPullBindData>();
 
     if (parts.size() == 1) {

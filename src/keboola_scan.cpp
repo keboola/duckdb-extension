@@ -381,6 +381,7 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
         }
         // Snapshot: all data is in the page buffer, no more pages to fetch.
         gstate->all_pages_fetched = true;
+        gstate->next_fetch_offset = static_cast<int64_t>(gstate->page_rows.size());
     } else {
         // Live mode: streaming scan via the Query Service.
         // Submit query, poll until done, fetch only the first page.
