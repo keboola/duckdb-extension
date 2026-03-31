@@ -365,7 +365,7 @@ void KeboolaSchemaEntry::PullTable(ClientContext & /*context*/, const std::strin
     // WHERE clauses verbatim. This is acceptable because the user already has full SQL
     // access through DuckDB; there is no privilege escalation.
     if (!filter.empty()) {
-        sql += " WHERE " + filter;
+        sql += " WHERE (" + filter + ")";
     }
 
     // Append changed_since filter (AND with existing WHERE if both are present).
