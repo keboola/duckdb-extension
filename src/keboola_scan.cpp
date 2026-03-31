@@ -420,8 +420,16 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
                 gstate->job_id, gstate->statement_id, 0);
 
             gstate->total_rows = first_page.total_rows;
-            gstate->page_rows = std::move(first_page.rows);
-            gstate->page_null_mask = std::move(first_page.null_mask);
+            gstate->page_rows.clear();
+            gstate->page_rows.reserve(first_page.rows.size());
+            for (auto &r : first_page.rows) {
+                gstate->page_rows.emplace_back(r.begin(), r.end());
+            }
+            gstate->page_null_mask.clear();
+            gstate->page_null_mask.reserve(first_page.null_mask.size());
+            for (auto &m : first_page.null_mask) {
+                gstate->page_null_mask.emplace_back(m.begin(), m.end());
+            }
             gstate->next_fetch_offset = static_cast<int64_t>(gstate->page_rows.size());
             gstate->all_pages_fetched = !first_page.has_more;
         } catch (const std::exception &e) {
@@ -453,8 +461,16 @@ bool KeboolaScanGlobalState::FetchNextPage() {
 
     try {
         auto page = qsc->FetchResultPage(job_id, statement_id, next_fetch_offset);
-        page_rows = std::move(page.rows);
-        page_null_mask = std::move(page.null_mask);
+        page_rows.clear();
+        page_rows.reserve(page.rows.size());
+        for (auto &r : page.rows) {
+            page_rows.emplace_back(r.begin(), r.end());
+        }
+        page_null_mask.clear();
+        page_null_mask.reserve(page.null_mask.size());
+        for (auto &m : page.null_mask) {
+            page_null_mask.emplace_back(m.begin(), m.end());
+        }
         page_position = 0;
         next_fetch_offset += static_cast<int64_t>(page_rows.size());
         all_pages_fetched = !page.has_more;
