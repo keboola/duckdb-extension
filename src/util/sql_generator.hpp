@@ -15,6 +15,7 @@
 #include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 
 #include <string>
 #include <vector>

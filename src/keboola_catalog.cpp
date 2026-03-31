@@ -990,12 +990,14 @@ void KeboolaCatalog::PullAllTables(ClientContext &context) {
 
 void KeboolaCatalog::PullTable(ClientContext &context,
                                 const std::string &schema_name,
-                                const std::string &table_name) {
+                                const std::string &table_name,
+                                const std::string &filter,
+                                const std::string &changed_since) {
     auto it = schemas_.find(schema_name);
     if (it == schemas_.end()) {
         throw CatalogException("Schema \"%s\" not found in Keboola catalog", schema_name);
     }
-    it->second->PullTable(context, table_name);
+    it->second->PullTable(context, table_name, filter, changed_since);
 }
 
 // ---------------------------------------------------------------------------

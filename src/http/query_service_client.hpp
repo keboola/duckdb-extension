@@ -37,7 +37,6 @@ public:
     //! Returns all rows with string values. Caller converts to DuckDB types.
     QueryServiceResult ExecuteQuery(const std::string &sql);
 
-private:
     //! POST the query and return the job ID.
     std::string SubmitQuery(const std::string &sql);
 
@@ -45,6 +44,13 @@ private:
     //! Throws IOException on timeout or error status. Returns the statement ID.
     std::string PollUntilDone(const std::string &job_id);
 
+    //! Fetch a single page of results for a completed job.
+    //! offset: row offset for pagination. Returns the page result.
+    QueryServiceResult FetchResultPage(const std::string &job_id,
+                                       const std::string &statement_id,
+                                       int64_t offset);
+
+private:
     //! Fetch all result pages for a completed job.
     QueryServiceResult FetchResults(const std::string &job_id, const std::string &statement_id);
 

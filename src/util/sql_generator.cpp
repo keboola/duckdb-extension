@@ -5,11 +5,15 @@
 #include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 // TableFilterSet include is handled in the header (table_filter_set.hpp vs table_filter.hpp)
 
 #include <sstream>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 namespace duckdb {
 
@@ -161,6 +165,32 @@ std::string KeboolaSqlGenerator::FilterToSql(const std::string &col_name,
             }
             oss << ")";
             return oss.str();
+        }
+
+        case TableFilterType::EXPRESSION_FILTER: {
+            // Handle LIKE/ILIKE expressions pushed down as ExpressionFilter.
+            // DuckDB wraps these as BoundFunctionExpression with function name
+            // "~~" (LIKE) or "~~*" (ILIKE).
+            const auto &ef = filter.Cast<ExpressionFilter>();
+            if (ef.expr && ef.expr->expression_class == ExpressionClass::BOUND_FUNCTION) {
+                const auto &func_expr = ef.expr->Cast<BoundFunctionExpression>();
+                const std::string &fname = func_expr.function.name;
+
+                // Recognize LIKE (~~) and ILIKE (~~*)
+                bool is_like  = (fname == "~~" || fname == "like_escape");
+                bool is_ilike = (fname == "~~*" || fname == "ilike_escape");
+
+                if ((is_like || is_ilike) && func_expr.children.size() >= 2) {
+                    // Second child should be the pattern constant
+                    const auto &pattern_expr = func_expr.children[1];
+                    if (pattern_expr->expression_class == ExpressionClass::BOUND_CONSTANT) {
+                        const auto &const_expr = pattern_expr->Cast<BoundConstantExpression>();
+                        std::string keyword = is_ilike ? "ILIKE" : "LIKE";
+                        return col + " " + keyword + " " + EscapeStringLiteral(const_expr.value.ToString());
+                    }
+                }
+            }
+            return ""; // unsupported expression — skip, DuckDB will apply locally
         }
 
         default:

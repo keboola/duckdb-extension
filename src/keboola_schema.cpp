@@ -103,7 +103,46 @@ unique_ptr<KeboolaTableEntry> KeboolaSchemaEntry::MakeTableEntry(
         create_info.columns.AddColumn(std::move(cdef));
     }
 
-    return make_uniq<KeboolaTableEntry>(catalog, *this, create_info, tbl, connection_);
+    // Expose Keboola's internal _timestamp column for incremental sync.
+    // This system column tracks when each row was last modified and is
+    // available in the Query Service workspace.
+    {
+        bool has_timestamp = false;
+        for (auto &col : tbl.columns) {
+            if (col.name == "_timestamp") {
+                has_timestamp = true;
+                break;
+            }
+        }
+        if (!has_timestamp) {
+            ColumnDefinition ts_cdef("_timestamp", LogicalType::TIMESTAMP);
+            create_info.columns.AddColumn(std::move(ts_cdef));
+        }
+    }
+
+    // Also add _timestamp to the KeboolaTableInfo columns so the scan path
+    // can project it correctly.  We mutate a local copy embedded in the entry.
+    KeboolaTableInfo tbl_copy = tbl;
+    {
+        bool has_timestamp = false;
+        for (auto &col : tbl_copy.columns) {
+            if (col.name == "_timestamp") {
+                has_timestamp = true;
+                break;
+            }
+        }
+        if (!has_timestamp) {
+            KeboolaColumnInfo ts_col;
+            ts_col.name = "_timestamp";
+            ts_col.duckdb_type = "TIMESTAMP";
+            ts_col.keboola_type = "TIMESTAMP";
+            ts_col.nullable = true;
+            ts_col.description = "Row-level modification timestamp (Keboola system column)";
+            tbl_copy.columns.push_back(std::move(ts_col));
+        }
+    }
+
+    return make_uniq<KeboolaTableEntry>(catalog, *this, create_info, tbl_copy, connection_);
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +357,8 @@ void KeboolaSchemaEntry::Alter(CatalogTransaction /*transaction*/, AlterInfo & /
 // Phase 6: SNAPSHOT — PullTable / PullAllTables
 // ---------------------------------------------------------------------------
 
-void KeboolaSchemaEntry::PullTable(ClientContext & /*context*/, const std::string &table_name) {
+void KeboolaSchemaEntry::PullTable(ClientContext & /*context*/, const std::string &table_name,
+                                    const std::string &filter, const std::string &changed_since) {
     std::string lower_name = StringUtil::Lower(table_name);
     auto it = tables_.find(lower_name);
     if (it == tables_.end()) {
@@ -329,9 +369,23 @@ void KeboolaSchemaEntry::PullTable(ClientContext & /*context*/, const std::strin
     KeboolaTableEntry &entry = *it->second;
     const KeboolaTableInfo &tbl_info = entry.GetKeboolaTableInfo();
 
-    // Build SELECT * SQL using the same quoting as the normal scan path:
-    // splits table_id on the last dot → "schema"."table"
+    // Build SELECT * SQL using the same quoting as the normal scan path.
     std::string sql = KeboolaSqlGenerator::BuildSelectSql(tbl_info.id, {}, nullptr, -1);
+
+    // Append user-supplied WHERE filter if provided.
+    if (!filter.empty()) {
+        sql += " WHERE " + filter;
+    }
+
+    // Append changed_since filter (AND with existing WHERE if both are present).
+    if (!changed_since.empty()) {
+        if (!filter.empty()) {
+            sql += " AND ";
+        } else {
+            sql += " WHERE ";
+        }
+        sql += "\"_timestamp\" >= '" + changed_since + "'";
+    }
 
     QueryServiceClient qsc(
         connection_->service_urls.query_url,

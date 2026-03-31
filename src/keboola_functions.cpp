@@ -176,12 +176,16 @@ static void KeboolaTablesScan(ClientContext & /*context*/, TableFunctionInput &d
 }
 
 // ---------------------------------------------------------------------------
-// keboola_pull(target VARCHAR) → TABLE(status VARCHAR)
+// keboola_pull(target VARCHAR, filter := '', changed_since := '') → TABLE(status VARCHAR)
 //
 // target can be:
 //   'kbc'                          — pull all tables in all schemas
 //   'kbc."in.c-crm"'               — pull all tables in one schema
 //   'kbc."in.c-crm".contacts'      — pull a single table
+//
+// Named parameters:
+//   filter       — SQL WHERE clause (without WHERE keyword) to filter rows.
+//   changed_since — ISO timestamp; only rows changed after this time are pulled.
 //
 // Registered as a TableFunction so that CALL keboola_pull(...) works.
 // ---------------------------------------------------------------------------
@@ -211,6 +215,17 @@ static unique_ptr<FunctionData> KeboolaPullBindFn(ClientContext &context,
     names        = {"status"};
 
     const std::string target = input.inputs[0].GetValue<std::string>();
+
+    // Extract optional named parameters
+    std::string filter_clause;
+    std::string changed_since;
+    for (auto &kv : input.named_parameters) {
+        if (kv.first == "filter") {
+            filter_clause = kv.second.GetValue<std::string>();
+        } else if (kv.first == "changed_since") {
+            changed_since = kv.second.GetValue<std::string>();
+        }
+    }
 
     // Parse: db_name[."schema_name"[.table_name]]
     // Tokens split by '.' outside of double-quotes
@@ -270,8 +285,11 @@ static unique_ptr<FunctionData> KeboolaPullBindFn(ClientContext &context,
     } else {
         const std::string schema_name = strip_quotes(parts[1]);
         const std::string table_name  = strip_quotes(parts[2]);
-        catalog.PullTable(context, schema_name, table_name);
-        bind_data->status_msg = "Pulled \"" + schema_name + "." + table_name + "\"";
+        catalog.PullTable(context, schema_name, table_name, filter_clause, changed_since);
+        std::string suffix;
+        if (!filter_clause.empty()) suffix += " (filter: " + filter_clause + ")";
+        if (!changed_since.empty()) suffix += " (changed_since: " + changed_since + ")";
+        bind_data->status_msg = "Pulled \"" + schema_name + "." + table_name + "\"" + suffix;
     }
 
     return std::move(bind_data);
@@ -319,12 +337,14 @@ void RegisterKeboolaFunctions(ExtensionLoader &loader) {
     tables_func.init_global = KeboolaTablesInitGlobal;
     loader.RegisterFunction(tables_func);
 
-    // keboola_pull(VARCHAR) → TABLE(status VARCHAR)  — callable via CALL keboola_pull(...)
+    // keboola_pull(VARCHAR, filter:=, changed_since:=) → TABLE(status VARCHAR)
     TableFunction pull_func("keboola_pull",
                              {LogicalType::VARCHAR},
                              KeboolaPullScan,
                              KeboolaPullBindFn);
     pull_func.init_global = KeboolaPullInitGlobal;
+    pull_func.named_parameters["filter"] = LogicalType::VARCHAR;
+    pull_func.named_parameters["changed_since"] = LogicalType::VARCHAR;
     loader.RegisterFunction(pull_func);
 }
 
