@@ -171,8 +171,20 @@ SELECT keboola_refresh_catalog('kbc');
 -- List all tables visible through an attached database
 SELECT * FROM keboola_tables('kbc');
 
--- Download snapshot of a specific table to a local Parquet file
-SELECT keboola_pull('kbc', 'in.c-crm', 'contacts', '/tmp/contacts.parquet');
+-- Pull all tables in database into snapshot
+CALL keboola_pull('kbc');
+
+-- Pull all tables in a schema
+CALL keboola_pull('kbc."in.c-crm"');
+
+-- Pull a single table
+CALL keboola_pull('kbc."in.c-crm".contacts');
+
+-- Pull with changed_since filter (incremental, only if table has _timestamp)
+CALL keboola_pull('kbc."in.c-crm".contacts', changed_since := '2024-01-01T00:00:00Z');
+
+-- Pull with row filter
+CALL keboola_pull('kbc."in.c-crm".contacts', filter := 'status = ''active''');
 
 -- Current extension version
 SELECT keboola_version();
