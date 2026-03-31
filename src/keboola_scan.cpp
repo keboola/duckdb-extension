@@ -359,40 +359,42 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
             // Evaluate filters and collect passing row indices.
             auto passing = FilterSnapshotRows(*filters, src_rows, src_mask,
                                               gstate->data_col_map, gstate->column_types);
-            gstate->rows.resize(passing.size());
-            gstate->null_mask.resize(passing.size());
+            gstate->page_rows.resize(passing.size());
+            gstate->page_null_mask.resize(passing.size());
             for (idx_t i = 0; i < passing.size(); i++) {
                 idx_t src = passing[i];
-                gstate->rows[i].assign(src_rows[src].begin(), src_rows[src].end());
+                gstate->page_rows[i].assign(src_rows[src].begin(), src_rows[src].end());
                 if (src < src_mask.size()) {
-                    gstate->null_mask[i].assign(src_mask[src].begin(), src_mask[src].end());
+                    gstate->page_null_mask[i].assign(src_mask[src].begin(), src_mask[src].end());
                 }
             }
         } else {
             // No filters — copy all rows.
-            gstate->rows.resize(src_rows.size());
+            gstate->page_rows.resize(src_rows.size());
             for (idx_t i = 0; i < src_rows.size(); i++) {
-                gstate->rows[i].assign(src_rows[i].begin(), src_rows[i].end());
+                gstate->page_rows[i].assign(src_rows[i].begin(), src_rows[i].end());
             }
-            gstate->null_mask.resize(src_mask.size());
+            gstate->page_null_mask.resize(src_mask.size());
             for (idx_t i = 0; i < src_mask.size(); i++) {
-                gstate->null_mask[i].assign(src_mask[i].begin(), src_mask[i].end());
+                gstate->page_null_mask[i].assign(src_mask[i].begin(), src_mask[i].end());
             }
         }
+        // Snapshot: all data is in the page buffer, no more pages to fetch.
+        gstate->all_pages_fetched = true;
+        gstate->next_fetch_offset = static_cast<int64_t>(gstate->page_rows.size());
     } else {
-        // Live mode: query via the Query Service
-        // Get pushed-down filters
+        // Live mode: streaming scan via the Query Service.
+        // Submit query, poll until done, fetch only the first page.
         const TableFilterSet *filters = input.filters.get();
 
         // Build full column name list for correct WHERE clause column name resolution.
-        // Filter column indices are table-level positions; projected_names may be a subset.
         std::vector<std::string> all_column_names;
         all_column_names.reserve(all_cols.size());
         for (const auto &col : all_cols) {
             all_column_names.push_back(col.name);
         }
 
-        // Build SQL
+        // Build SQL (no LIMIT — DuckDB stops calling scan when it has enough rows)
         std::string sql = KeboolaSqlGenerator::BuildSelectSql(
             bind.table_info.id,
             projected_names,
@@ -401,7 +403,8 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
             all_column_names
         );
 
-        QueryServiceClient qsc(
+        // Create a persistent QueryServiceClient for streaming.
+        gstate->qsc = make_uniq<QueryServiceClient>(
             conn.service_urls.query_url,
             conn.token,
             conn.branch_id,
@@ -409,23 +412,35 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
         );
 
         try {
-            auto result = qsc.ExecuteQuery(sql);
-            gstate->rows.resize(result.rows.size());
-            for (idx_t i = 0; i < result.rows.size(); i++) {
-                gstate->rows[i].assign(result.rows[i].begin(), result.rows[i].end());
+            // Submit and poll
+            gstate->job_id = gstate->qsc->SubmitQuery(sql);
+            gstate->statement_id = gstate->qsc->PollUntilDone(gstate->job_id);
+
+            // Fetch the first page
+            auto first_page = gstate->qsc->FetchResultPage(
+                gstate->job_id, gstate->statement_id, 0);
+
+            gstate->total_rows = first_page.total_rows;
+            gstate->page_rows.clear();
+            gstate->page_rows.reserve(first_page.rows.size());
+            for (auto &r : first_page.rows) {
+                gstate->page_rows.emplace_back(r.begin(), r.end());
             }
-            gstate->null_mask.resize(result.null_mask.size());
-            for (idx_t i = 0; i < result.null_mask.size(); i++) {
-                gstate->null_mask[i].assign(result.null_mask[i].begin(), result.null_mask[i].end());
+            gstate->page_null_mask.clear();
+            gstate->page_null_mask.reserve(first_page.null_mask.size());
+            for (auto &m : first_page.null_mask) {
+                gstate->page_null_mask.emplace_back(m.begin(), m.end());
             }
+            gstate->next_fetch_offset = static_cast<int64_t>(gstate->page_rows.size());
+            gstate->all_pages_fetched = !first_page.has_more;
         } catch (const std::exception &e) {
             throw IOException("Keboola scan failed for table '%s': %s",
                               bind.table_info.id, std::string(e.what()));
         }
     }
 
-    gstate->position = 0;
-    gstate->done = gstate->rows.empty();
+    gstate->page_position = 0;
+    gstate->done = gstate->page_rows.empty() && gstate->all_pages_fetched;
 
     return std::move(gstate);
 }
@@ -433,6 +448,45 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
 // ---------------------------------------------------------------------------
 // Scan function
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// FetchNextPage — streaming helper
+// ---------------------------------------------------------------------------
+
+bool KeboolaScanGlobalState::FetchNextPage() {
+    std::lock_guard<std::mutex> lock(fetch_mutex);
+
+    if (all_pages_fetched || !qsc) {
+        return false;
+    }
+
+    try {
+        auto page = qsc->FetchResultPage(job_id, statement_id, next_fetch_offset);
+        page_rows.clear();
+        page_rows.reserve(page.rows.size());
+        for (auto &r : page.rows) {
+            page_rows.emplace_back(r.begin(), r.end());
+        }
+        page_null_mask.clear();
+        page_null_mask.reserve(page.null_mask.size());
+        for (auto &m : page.null_mask) {
+            page_null_mask.emplace_back(m.begin(), m.end());
+        }
+        page_position = 0;
+        next_fetch_offset += static_cast<int64_t>(page_rows.size());
+        all_pages_fetched = !page.has_more;
+
+        if (page_rows.empty()) {
+            all_pages_fetched = true;
+            return false;
+        }
+        return true;
+    } catch (...) {
+        // Do not swallow — propagate so DuckDB surfaces the error instead of
+        // silently returning truncated results.
+        throw;
+    }
+}
 
 static void KeboolaScanFunction(ClientContext & /*context*/,
                                  TableFunctionInput &data_p,
@@ -447,19 +501,36 @@ static void KeboolaScanFunction(ClientContext & /*context*/,
     // Column types were resolved during InitGlobal and stored on the global state.
     const auto &col_types = gstate.column_types;
 
+    // Track a global row index for virtual row-id columns across pages.
+    // For the current page, the absolute row index is:
+    //   (next_fetch_offset - page_rows.size()) + page_position + offset_within_chunk
+    // But since we only use row_idx for the row-id virtual column and MaxThreads=1,
+    // we can use a simple counter that persists across scan calls.
+    // We approximate it using next_fetch_offset and page_position.
+
     idx_t count = 0;
     idx_t col_count = output.ColumnCount();
 
+    // NOTE: All page_position / page_rows access below is single-threaded
+    // (MaxThreads() == 1). No locking needed for read-side access.
     while (count < STANDARD_VECTOR_SIZE) {
-        idx_t row_idx = gstate.position.fetch_add(1);
-        if (row_idx >= gstate.rows.size()) {
-            gstate.done = true;
-            break;
+        // Check if we need to fetch the next page
+        if (gstate.page_position >= gstate.page_rows.size()) {
+            if (!gstate.FetchNextPage()) {
+                gstate.done = true;
+                break;
+            }
         }
 
-        const auto &row = gstate.rows[row_idx];
-        const auto *row_nulls = (row_idx < gstate.null_mask.size())
-                                     ? &gstate.null_mask[row_idx]
+        idx_t page_row_idx = gstate.page_position++;
+        // Absolute row index for row-id virtual columns
+        idx_t abs_row_idx = static_cast<idx_t>(
+            gstate.next_fetch_offset - static_cast<int64_t>(gstate.page_rows.size())
+        ) + page_row_idx;
+
+        const auto &row = gstate.page_rows[page_row_idx];
+        const auto *row_nulls = (page_row_idx < gstate.page_null_mask.size())
+                                     ? &gstate.page_null_mask[page_row_idx]
                                      : nullptr;
 
         for (idx_t col_idx = 0; col_idx < col_count; col_idx++) {
@@ -471,8 +542,8 @@ static void KeboolaScanFunction(ClientContext & /*context*/,
                          : static_cast<int>(col_idx);
 
             if (dc == -1) {
-                // Virtual row-id column: output the row index as BIGINT.
-                vec.SetValue(count, Value::BIGINT(static_cast<int64_t>(row_idx)));
+                // Virtual row-id column: output the absolute row index as BIGINT.
+                vec.SetValue(count, Value::BIGINT(static_cast<int64_t>(abs_row_idx)));
                 continue;
             }
 

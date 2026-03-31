@@ -94,9 +94,13 @@ public:
 
     //! Pull a single table into local snapshot storage.
     //! schema_name: bucket id (e.g. "in.c-crm"), table_name: table name (e.g. "contacts").
+    //! filter: optional SQL WHERE clause (without the WHERE keyword).
+    //! changed_since: optional ISO timestamp; only rows changed after this time are pulled.
     void PullTable(ClientContext &context,
                    const std::string &schema_name,
-                   const std::string &table_name);
+                   const std::string &table_name,
+                   const std::string &filter = "",
+                   const std::string &changed_since = "");
 
     //! Expose schemas map for keboola_tables() and keboola_pull() functions.
     const std::unordered_map<std::string, unique_ptr<KeboolaSchemaEntry>> &GetSchemas() const {

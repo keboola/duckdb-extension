@@ -78,7 +78,10 @@ public:
     void PullAllTables(ClientContext &context);
 
     //! Pull a single table into local snapshot storage.
-    void PullTable(ClientContext &context, const std::string &table_name);
+    //! filter: optional SQL WHERE clause (without the WHERE keyword) to filter rows.
+    //! changed_since: optional ISO timestamp; only rows changed after this time are pulled.
+    void PullTable(ClientContext &context, const std::string &table_name,
+                   const std::string &filter = "", const std::string &changed_since = "");
 
     //! Expose bucket info (for keboola_tables() function).
     const KeboolaBucketInfo &GetBucketInfo() const { return bucket_; }
