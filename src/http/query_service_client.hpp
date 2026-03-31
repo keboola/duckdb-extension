@@ -51,12 +51,6 @@ public:
                                        int64_t offset);
 
 private:
-    //! Parse columns, numberOfRows, and row data from a single JSON result page
-    //! into `result`. Appends rows/null_mask (does not clear them first).
-    //! Returns the number of rows parsed from this page.
-    static int64_t ParseResultPageJson(yyjson_val *root, QueryServiceResult &result,
-                                       bool parse_columns);
-
     //! Fetch all result pages for a completed job.
     QueryServiceResult FetchResults(const std::string &job_id, const std::string &statement_id);
 

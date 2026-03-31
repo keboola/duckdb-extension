@@ -170,8 +170,8 @@ std::string QueryServiceClient::PollUntilDone(const std::string &job_id) {
 // ParseResultPageJson — shared JSON parsing for a single result page
 // ---------------------------------------------------------------------------
 
-int64_t QueryServiceClient::ParseResultPageJson(yyjson_val *root, QueryServiceResult &result,
-                                                  bool parse_columns) {
+static int64_t ParseResultPageJson(yyjson_val *root, QueryServiceResult &result,
+                                    bool parse_columns) {
     // Parse columns and numberOfRows (typically only on the first page)
     if (parse_columns) {
         yyjson_val *cols = yyjson_obj_get(root, "columns");
