@@ -172,9 +172,16 @@ std::string KeboolaSqlGenerator::FilterToSql(const std::string &col_name,
             // DuckDB wraps these as BoundFunctionExpression with function name
             // "~~" (LIKE) or "~~*" (ILIKE).
             const auto &ef = filter.Cast<ExpressionFilter>();
-            if (ef.expr && ef.expr->expression_class == ExpressionClass::BOUND_FUNCTION) {
+            if (ef.expr && ef.expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
                 const auto &func_expr = ef.expr->Cast<BoundFunctionExpression>();
+                // DuckDB main wrapped Function inside BoundSimpleFunction with
+                // protected `name` and a public GetName() getter; v1.5.2 still
+                // has Function::name as a public field.
+#if defined(__has_include) && __has_include("duckdb/common/vector/flat_vector.hpp")
+                const std::string &fname = func_expr.function.GetName();
+#else
                 const std::string &fname = func_expr.function.name;
+#endif
 
                 // Recognize simple LIKE (~~) and ILIKE (~~*) only.
                 // The like_escape/ilike_escape variants (3-arg with ESCAPE clause) are
@@ -186,7 +193,7 @@ std::string KeboolaSqlGenerator::FilterToSql(const std::string &col_name,
                 if ((is_like || is_ilike) && func_expr.children.size() >= 2) {
                     // Second child should be the pattern constant
                     const auto &pattern_expr = func_expr.children[1];
-                    if (pattern_expr->expression_class == ExpressionClass::BOUND_CONSTANT) {
+                    if (pattern_expr->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
                         const auto &const_expr = pattern_expr->Cast<BoundConstantExpression>();
                         std::string keyword = is_ilike ? "ILIKE" : "LIKE";
                         return col + " " + keyword + " " + EscapeStringLiteral(const_expr.value.ToString());

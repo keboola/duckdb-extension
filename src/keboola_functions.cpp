@@ -18,6 +18,16 @@
 #include <string>
 #include <vector>
 
+// DuckDB main split FlatVector into common/vector/flat_vector.hpp and made
+// FlatVector::GetData<T>() return const T*; mutable access requires the new
+// GetDataMutable<T>().  v1.5.2 still has only GetData<T> (overloaded
+// const/non-const) in common/types/vector.hpp.  Pick the right one.
+#if defined(__has_include) && __has_include("duckdb/common/vector/flat_vector.hpp")
+#define KEBOOLA_FLAT_DATA(TYPE, VEC) (::duckdb::FlatVector::GetDataMutable<TYPE>(VEC))
+#else
+#define KEBOOLA_FLAT_DATA(TYPE, VEC) (::duckdb::FlatVector::GetData<TYPE>(VEC))
+#endif
+
 namespace duckdb {
 
 // ---------------------------------------------------------------------------
@@ -158,15 +168,15 @@ static void KeboolaTablesScan(ClientContext & /*context*/, TableFunctionInput &d
     while (state.position < total && count < STANDARD_VECTOR_SIZE) {
         idx_t i = state.position++;
 
-        FlatVector::GetData<string_t>(output.data[0])[count] =
+        KEBOOLA_FLAT_DATA(string_t, output.data[0])[count] =
             StringVector::AddString(output.data[0], bind.schema_names[i]);
-        FlatVector::GetData<string_t>(output.data[1])[count] =
+        KEBOOLA_FLAT_DATA(string_t, output.data[1])[count] =
             StringVector::AddString(output.data[1], bind.table_names[i]);
-        FlatVector::GetData<string_t>(output.data[2])[count] =
+        KEBOOLA_FLAT_DATA(string_t, output.data[2])[count] =
             StringVector::AddString(output.data[2], bind.table_ids[i]);
-        FlatVector::GetData<string_t>(output.data[3])[count] =
+        KEBOOLA_FLAT_DATA(string_t, output.data[3])[count] =
             StringVector::AddString(output.data[3], bind.descriptions[i]);
-        FlatVector::GetData<string_t>(output.data[4])[count] =
+        KEBOOLA_FLAT_DATA(string_t, output.data[4])[count] =
             StringVector::AddString(output.data[4], bind.primary_keys[i]);
 
         count++;
@@ -317,7 +327,7 @@ static void KeboolaPullScan(ClientContext & /*context*/, TableFunctionInput &dat
         return;
     }
 
-    FlatVector::GetData<string_t>(output.data[0])[0] =
+    KEBOOLA_FLAT_DATA(string_t, output.data[0])[0] =
         StringVector::AddString(output.data[0], bind.status_msg);
     output.SetCardinality(1);
     state.done = true;

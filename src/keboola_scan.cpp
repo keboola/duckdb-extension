@@ -194,7 +194,25 @@ static bool EvaluateTableFilter(const TableFilter &filter,
             } catch (const std::exception &) {
                 return false;
             }
-            return cf.Compare(casted);
+            // ConstantFilter::Compare() was removed from DuckDB main; the
+            // class is now flagged as deprecated (kept only for serialization).
+            // Open-code the comparison using the public fields.
+            switch (cf.comparison_type) {
+                case ExpressionType::COMPARE_EQUAL:
+                    return casted == cf.constant;
+                case ExpressionType::COMPARE_NOTEQUAL:
+                    return casted != cf.constant;
+                case ExpressionType::COMPARE_LESSTHAN:
+                    return casted < cf.constant;
+                case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+                    return casted <= cf.constant;
+                case ExpressionType::COMPARE_GREATERTHAN:
+                    return casted > cf.constant;
+                case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+                    return casted >= cf.constant;
+                default:
+                    return true;  // Unknown comparison — pass through
+            }
         }
         default:
             return true;  // Unknown filter — pass through; DuckDB may re-check above
