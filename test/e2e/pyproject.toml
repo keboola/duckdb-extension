@@ -7,7 +7,7 @@ dependencies = []
 [tool.uv]
 package = false
 dev-dependencies = [
-    "duckdb>=1.4.0",
+    "duckdb>=1.5.2",
     "pytest>=8.3.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.6.0",
