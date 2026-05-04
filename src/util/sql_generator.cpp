@@ -174,7 +174,14 @@ std::string KeboolaSqlGenerator::FilterToSql(const std::string &col_name,
             const auto &ef = filter.Cast<ExpressionFilter>();
             if (ef.expr && ef.expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
                 const auto &func_expr = ef.expr->Cast<BoundFunctionExpression>();
+                // DuckDB main wrapped Function inside BoundSimpleFunction with
+                // protected `name` and a public GetName() getter; v1.5.2 still
+                // has Function::name as a public field.
+#if defined(__has_include) && __has_include("duckdb/common/vector/flat_vector.hpp")
+                const std::string &fname = func_expr.function.GetName();
+#else
                 const std::string &fname = func_expr.function.name;
+#endif
 
                 // Recognize simple LIKE (~~) and ILIKE (~~*) only.
                 // The like_escape/ilike_escape variants (3-arg with ESCAPE clause) are
