@@ -227,7 +227,7 @@ PhysicalOperator &KeboolaCatalog::PlanInsert(ClientContext & /*context*/,
 //! Try to extract a string constant from an expression.
 //! Returns true and sets out_value on success.
 static bool TryExtractStringConstant(const Expression &expr, std::string &out_value) {
-    if (expr.expression_class == ExpressionClass::BOUND_CONSTANT) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
         const auto &bce = expr.Cast<BoundConstantExpression>();
         if (!bce.value.IsNull()) {
             out_value = bce.value.ToString();
@@ -236,7 +236,7 @@ static bool TryExtractStringConstant(const Expression &expr, std::string &out_va
         return false;
     }
     // Unwrap CAST nodes (e.g. CAST('val' AS VARCHAR))
-    if (expr.expression_class == ExpressionClass::BOUND_CAST) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_CAST) {
         const auto &cast = expr.Cast<BoundCastExpression>();
         return TryExtractStringConstant(*cast.child, out_value);
     }
@@ -257,7 +257,7 @@ GetColumnIdx(T v) { return static_cast<idx_t>(v.GetIndexUnsafe()); }
 static bool TryExtractColumnName(const Expression &expr,
                                   const LogicalGet &get,
                                   std::string &out_col_name) {
-    if (expr.expression_class == ExpressionClass::BOUND_COLUMN_REF) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
         const auto &cref = expr.Cast<BoundColumnRefExpression>();
         // column_index is idx_t in DuckDB v1.5.0; ProjectionIndex (struct) in DuckDB main.
         // Use SFINAE helpers (C++11 compatible) to dispatch without version macros.
@@ -269,7 +269,7 @@ static bool TryExtractColumnName(const Expression &expr,
         }
     }
     // Unwrap CAST
-    if (expr.expression_class == ExpressionClass::BOUND_CAST) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_CAST) {
         const auto &cast = expr.Cast<BoundCastExpression>();
         return TryExtractColumnName(*cast.child, get, out_col_name);
     }
@@ -290,7 +290,7 @@ static bool TryExtractColumnNameFromScan(const Expression &expr,
                                           const vector<string> &names,
                                           const vector<ColumnIndex> &column_ids,
                                           std::string &out_col_name) {
-    if (expr.expression_class == ExpressionClass::BOUND_COLUMN_REF) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
         const auto &cref = expr.Cast<BoundColumnRefExpression>();
         idx_t col_idx = GetColumnIdx(cref.binding.column_index);
         if (col_idx < names.size()) {
@@ -298,7 +298,7 @@ static bool TryExtractColumnNameFromScan(const Expression &expr,
             return true;
         }
     }
-    if (expr.expression_class == ExpressionClass::BOUND_REF) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_REF) {
         // PhysicalFilter expressions use BoundReferenceExpression (DataChunk index).
         // Map through column_ids to get the schema-absolute index, then names[].
         const auto &bref = expr.Cast<BoundReferenceExpression>();
@@ -311,7 +311,7 @@ static bool TryExtractColumnNameFromScan(const Expression &expr,
             }
         }
     }
-    if (expr.expression_class == ExpressionClass::BOUND_CAST) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_CAST) {
         const auto &cast = expr.Cast<BoundCastExpression>();
         return TryExtractColumnNameFromScan(*cast.child, names, column_ids, out_col_name);
     }
@@ -327,7 +327,7 @@ static KeboolaDeleteParams ParsePhysicalFilterExpression(const Expression &expr,
     KeboolaDeleteParams params;
 
     // Simple equality / inequality comparison: col = val or col != val
-    if (expr.expression_class == ExpressionClass::BOUND_COMPARISON) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_COMPARISON) {
         const auto &cmp = expr.Cast<BoundComparisonExpression>();
         std::string col_name, val;
         bool ok = (TryExtractColumnNameFromScan(*cmp.left, names, column_ids, col_name) &&
@@ -357,7 +357,7 @@ static KeboolaDeleteParams ParsePhysicalFilterExpression(const Expression &expr,
     }
 
     // IN expression: col IN (val1, val2, ...)
-    if (expr.expression_class == ExpressionClass::BOUND_OPERATOR) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_OPERATOR) {
         const auto &op_expr = expr.Cast<BoundOperatorExpression>();
         if (op_expr.type == ExpressionType::COMPARE_IN && !op_expr.children.empty()) {
             std::string col_name;
@@ -382,13 +382,13 @@ static KeboolaDeleteParams ParsePhysicalFilterExpression(const Expression &expr,
     }
 
     // OR conjunction: DuckDB rewrites `col IN ('a','b')` as `col = 'a' OR col = 'b'`
-    if (expr.expression_class == ExpressionClass::BOUND_CONJUNCTION) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION) {
         const auto &conj = expr.Cast<BoundConjunctionExpression>();
         if (conj.type == ExpressionType::CONJUNCTION_OR) {
             std::string col_name;
             std::vector<std::string> vals;
             for (const auto &child : conj.children) {
-                if (child->expression_class != ExpressionClass::BOUND_COMPARISON) {
+                if (child->GetExpressionClass() != ExpressionClass::BOUND_COMPARISON) {
                     throw NotImplementedException(
                         "DELETE WHERE IN: OR children must be simple comparisons. Got: %s",
                         child->ToString());
@@ -459,7 +459,7 @@ static KeboolaDeleteParams ParseFilterExpression(const Expression &expr,
                                                    const LogicalGet &get) {
     KeboolaDeleteParams params;
 
-    if (expr.expression_class == ExpressionClass::BOUND_COMPARISON) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_COMPARISON) {
         const auto &cmp = expr.Cast<BoundComparisonExpression>();
 
         std::string col_name;
@@ -499,7 +499,7 @@ static KeboolaDeleteParams ParseFilterExpression(const Expression &expr,
     }
 
     // IN (col IN ('a', 'b', ...))
-    if (expr.expression_class == ExpressionClass::BOUND_OPERATOR) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_OPERATOR) {
         const auto &op_expr = expr.Cast<BoundOperatorExpression>();
         if (op_expr.type == ExpressionType::COMPARE_IN) {
             // children[0] is the column, children[1..] are the IN values
@@ -534,14 +534,14 @@ static KeboolaDeleteParams ParseFilterExpression(const Expression &expr,
 
     // OR conjunction: DuckDB rewrites `col IN ('a','b')` as `col = 'a' OR col = 'b'`
     // which is represented as BoundConjunctionExpression(CONJUNCTION_OR).
-    if (expr.expression_class == ExpressionClass::BOUND_CONJUNCTION) {
+    if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION) {
         const auto &conj = expr.Cast<BoundConjunctionExpression>();
         if (conj.type == ExpressionType::CONJUNCTION_OR) {
             std::string col_name;
             std::vector<std::string> vals;
 
             for (const auto &child : conj.children) {
-                if (child->expression_class != ExpressionClass::BOUND_COMPARISON) {
+                if (child->GetExpressionClass() != ExpressionClass::BOUND_COMPARISON) {
                     throw NotImplementedException(
                         "DELETE WHERE IN: OR conjunction children must be simple comparisons "
                         "(Storage API limitation). Got: %s", child->ToString());
@@ -934,7 +934,7 @@ PhysicalOperator &KeboolaCatalog::PlanUpdate(ClientContext & /*context*/,
         // Extract the new value from the projection's select_list
         if (proj_exprs && i < proj_exprs->size() && (*proj_exprs)[i]) {
             const auto &expr = *(*proj_exprs)[i];
-            if (expr.expression_class == ExpressionClass::BOUND_CONSTANT) {
+            if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
                 const auto &bce = expr.Cast<BoundConstantExpression>();
                 if (bce.value.IsNull()) {
                     sc.new_value = "";
