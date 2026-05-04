@@ -139,6 +139,19 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
     std::string secret_name;
     bool snapshot_mode = false;
     bool explicit_read_only = false;
+    // Default to true so that "SELECT * FROM kbc.\"in.c-bucket\".\"tbl\"" works
+    // out-of-the-box.  The token already governs which buckets are visible —
+    // this flag only exposes those existing permissions to the workspace's
+    // Snowflake role.  Set READ_ONLY_STORAGE = false for least-privilege
+    // setups where the workspace should not see any storage buckets.
+    bool read_only_storage = true;
+
+    auto parse_bool = [](const std::string &raw) {
+        const auto val = StringUtil::Lower(raw);
+        if (val.empty() || val == "true" || val == "1" || val == "yes") return true;
+        if (val == "false" || val == "0" || val == "no") return false;
+        return true;
+    };
 
     // Parse ATTACH options
     for (auto &entry : info.options) {
@@ -160,8 +173,9 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
         } else if (lower == "snapshot") {
             // SNAPSHOT option: pull all tables into local storage at attach time
             // Accept any truthy value or bare keyword (value="true"/"1"/etc.)
-            const auto val = StringUtil::Lower(entry.second.ToString());
-            snapshot_mode = (val.empty() || val == "true" || val == "1" || val == "yes");
+            snapshot_mode = parse_bool(entry.second.ToString());
+        } else if (lower == "read_only_storage") {
+            read_only_storage = parse_bool(entry.second.ToString());
         } else {
             throw BinderException("Unrecognized option for Keboola ATTACH: %s", entry.first);
         }
@@ -232,7 +246,7 @@ static unique_ptr<Catalog> KeboolaAttach(optional_ptr<StorageExtensionInfo> /*st
     // Create a session-scoped workspace (unique per ATTACH).
     // Also garbage-collects orphaned workspaces from previous crashed sessions.
     try {
-        auto ws = conn->storage_client->CreateSessionWorkspace();
+        auto ws = conn->storage_client->CreateSessionWorkspace(read_only_storage);
         conn->workspace_id = ws.id;
     } catch (const IOException &e) {
         throw;

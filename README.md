@@ -89,6 +89,22 @@ ATTACH 'https://connection.keboola.com' AS kbc (
 );
 ```
 
+### Storage visibility (`READ_ONLY_STORAGE`)
+
+By default, the per-session Keboola workspace is created with `readOnlyStorageAccess = true`, which exposes every storage bucket the token can read as a queryable schema (`SELECT * FROM kbc."in.c-bucket"."tbl"` works out of the box).  The token still governs which buckets are visible — this flag only surfaces those existing permissions to the workspace's Snowflake role.
+
+For least-privilege setups where the workspace must not see any storage buckets, opt out:
+
+```sql
+ATTACH 'https://connection.keboola.com' AS kbc (
+    TYPE              keboola,
+    TOKEN             'my-storage-api-token',
+    READ_ONLY_STORAGE false
+);
+```
+
+With `READ_ONLY_STORAGE false`, SELECT against storage buckets fails with `Schema "..." does not exist or not authorized`; only writes via INSERT (CSV upload through the Storage API) and explicit per-table snapshots remain available.
+
 ---
 
 ## Supported SQL Operations

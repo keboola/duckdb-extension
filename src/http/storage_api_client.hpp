@@ -81,7 +81,13 @@ public:
 
     //! Create a new workspace with a unique session-specific name.
     //! Also garbage-collects stale workspaces from previous crashed sessions.
-    KeboolaWorkspaceInfo CreateSessionWorkspace();
+    //!
+    //! When read_only_storage_access is true, the workspace's Snowflake role
+    //! sees every storage bucket the token can read as a schema, so the
+    //! Query Service can resolve table references like "in.c-bucket"."tbl"
+    //! without explicit per-table loading.  When false, the workspace is an
+    //! empty Snowflake schema with no view of storage buckets.
+    KeboolaWorkspaceInfo CreateSessionWorkspace(bool read_only_storage_access = true);
 
     //! Delete stale "duckdb-ext-*" workspaces that were orphaned by crashed sessions.
     //! Best-effort: errors are silently ignored.

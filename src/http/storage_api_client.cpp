@@ -358,13 +358,18 @@ static std::string GenerateSessionSuffix() {
 // CreateSessionWorkspace
 // ---------------------------------------------------------------------------
 
-KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace() {
+KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_storage_access) {
     // Best-effort: clean up orphaned workspaces from crashed sessions
     CleanupStaleWorkspaces();
 
-    // Create a new workspace with a unique name
+    // Create a new workspace with a unique name.
+    // readOnlyStorageAccess=true exposes every storage bucket the token can
+    // read as a schema in the workspace's Snowflake account, so the Query
+    // Service can resolve "in.c-bucket"."table" without per-table loading.
     std::string ws_name = std::string(WORKSPACE_PREFIX) + GenerateSessionSuffix();
-    std::string create_body = "{\"name\":\"" + ws_name + "\"}";
+    std::string create_body = std::string("{\"name\":\"") + ws_name +
+                              "\",\"readOnlyStorageAccess\":" +
+                              (read_only_storage_access ? "true" : "false") + "}";
     std::string create_resp;
     try {
         create_resp = http_.Post("/v2/storage/workspaces", create_body, "application/json");
