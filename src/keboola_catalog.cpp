@@ -341,7 +341,7 @@ static KeboolaDeleteParams ParsePhysicalFilterExpression(const Expression &expr,
         }
         params.where_column = col_name;
         params.where_values  = {val};
-        switch (cmp.type) {
+        switch (cmp.GetExpressionType()) {
             case ExpressionType::COMPARE_EQUAL:
             case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
                 params.where_operator = "eq"; break;
@@ -359,7 +359,7 @@ static KeboolaDeleteParams ParsePhysicalFilterExpression(const Expression &expr,
     // IN expression: col IN (val1, val2, ...)
     if (expr.GetExpressionClass() == ExpressionClass::BOUND_OPERATOR) {
         const auto &op_expr = expr.Cast<BoundOperatorExpression>();
-        if (op_expr.type == ExpressionType::COMPARE_IN && !op_expr.children.empty()) {
+        if (op_expr.GetExpressionType() == ExpressionType::COMPARE_IN && !op_expr.children.empty()) {
             std::string col_name;
             if (!TryExtractColumnNameFromScan(*op_expr.children[0], names, column_ids, col_name)) {
                 throw NotImplementedException(
@@ -384,7 +384,7 @@ static KeboolaDeleteParams ParsePhysicalFilterExpression(const Expression &expr,
     // OR conjunction: DuckDB rewrites `col IN ('a','b')` as `col = 'a' OR col = 'b'`
     if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION) {
         const auto &conj = expr.Cast<BoundConjunctionExpression>();
-        if (conj.type == ExpressionType::CONJUNCTION_OR) {
+        if (conj.GetExpressionType() == ExpressionType::CONJUNCTION_OR) {
             std::string col_name;
             std::vector<std::string> vals;
             for (const auto &child : conj.children) {
@@ -394,8 +394,8 @@ static KeboolaDeleteParams ParsePhysicalFilterExpression(const Expression &expr,
                         child->ToString());
                 }
                 const auto &cmp = child->Cast<BoundComparisonExpression>();
-                if (cmp.type != ExpressionType::COMPARE_EQUAL &&
-                    cmp.type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+                if (cmp.GetExpressionType() != ExpressionType::COMPARE_EQUAL &&
+                    cmp.GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
                     throw NotImplementedException(
                         "DELETE WHERE IN: OR children must be equality comparisons. Got: %s",
                         child->ToString());
@@ -479,7 +479,7 @@ static KeboolaDeleteParams ParseFilterExpression(const Expression &expr,
         params.where_column = col_name;
         params.where_values  = {val};
 
-        switch (cmp.type) {
+        switch (cmp.GetExpressionType()) {
             case ExpressionType::COMPARE_EQUAL:
             case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
                 params.where_operator = "eq";
@@ -501,7 +501,7 @@ static KeboolaDeleteParams ParseFilterExpression(const Expression &expr,
     // IN (col IN ('a', 'b', ...))
     if (expr.GetExpressionClass() == ExpressionClass::BOUND_OPERATOR) {
         const auto &op_expr = expr.Cast<BoundOperatorExpression>();
-        if (op_expr.type == ExpressionType::COMPARE_IN) {
+        if (op_expr.GetExpressionType() == ExpressionType::COMPARE_IN) {
             // children[0] is the column, children[1..] are the IN values
             if (op_expr.children.empty()) {
                 throw NotImplementedException(
@@ -536,7 +536,7 @@ static KeboolaDeleteParams ParseFilterExpression(const Expression &expr,
     // which is represented as BoundConjunctionExpression(CONJUNCTION_OR).
     if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION) {
         const auto &conj = expr.Cast<BoundConjunctionExpression>();
-        if (conj.type == ExpressionType::CONJUNCTION_OR) {
+        if (conj.GetExpressionType() == ExpressionType::CONJUNCTION_OR) {
             std::string col_name;
             std::vector<std::string> vals;
 
@@ -547,8 +547,8 @@ static KeboolaDeleteParams ParseFilterExpression(const Expression &expr,
                         "(Storage API limitation). Got: %s", child->ToString());
                 }
                 const auto &cmp = child->Cast<BoundComparisonExpression>();
-                if (cmp.type != ExpressionType::COMPARE_EQUAL &&
-                    cmp.type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+                if (cmp.GetExpressionType() != ExpressionType::COMPARE_EQUAL &&
+                    cmp.GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
                     throw NotImplementedException(
                         "DELETE WHERE IN: OR conjunction children must be equality comparisons "
                         "(Storage API limitation). Got: %s", child->ToString());
