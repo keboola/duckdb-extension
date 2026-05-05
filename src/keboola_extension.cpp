@@ -23,11 +23,10 @@ static void KeboolaVersionScalarFun(DataChunk & /*args*/, ExpressionState & /*st
     auto &result_vector = result;
     result_vector.SetVectorType(VectorType::CONSTANT_VECTOR);
 
-#if defined(__has_include) && __has_include("duckdb/common/vector/flat_vector.hpp")
-    auto *out = ConstantVector::GetDataMutable<string_t>(result_vector);
-#else
+    // ConstantVector keeps the non-const GetData<T>(Vector&) overload in
+    // both v1.5.2 and DuckDB main (only FlatVector switched to a separate
+    // GetDataMutable<T>).  Using GetData here is the portable form.
     auto *out = ConstantVector::GetData<string_t>(result_vector);
-#endif
 
 #ifdef EXT_VERSION_KEBOOLA
     // Build sets EXT_VERSION_KEBOOLA to the git short SHA on tagged builds and
