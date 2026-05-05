@@ -83,6 +83,15 @@ unique_ptr<GlobalSinkState> KeboolaUpdate::GetGlobalSinkState(ClientContext & /*
     auto &keboola_table = table_.Cast<KeboolaTableEntry>();
     const auto &table_info = keboola_table.GetKeboolaTableInfo();
 
+    // Linked buckets are owned by another project — the Storage Importer
+    // API and Snowflake-side grants both reject writes from this side.
+    if (table_info.is_linked) {
+        throw NotImplementedException(
+            "UPDATE on linked bucket table '%s' is not supported "
+            "(linked buckets are read-only — modify them in the source project)",
+            table_info.id);
+    }
+
     // Require a primary key — Storage deduplication depends on it
     if (table_info.primary_key.empty()) {
         throw NotImplementedException(
@@ -90,10 +99,11 @@ unique_ptr<GlobalSinkState> KeboolaUpdate::GetGlobalSinkState(ClientContext & /*
     }
 
     auto gstate = make_uniq<KeboolaUpdateGlobalState>();
-    gstate->table_id    = table_info.id;
-    gstate->connection  = keboola_table.GetConnection();
-    gstate->primary_key = table_info.primary_key;
-    gstate->set_columns = set_columns_;
+    gstate->table_id     = table_info.id;
+    gstate->qualified_ref = KeboolaSqlGenerator::SnowflakeQualifiedRef(table_info);
+    gstate->connection   = keboola_table.GetConnection();
+    gstate->primary_key  = table_info.primary_key;
+    gstate->set_columns  = set_columns_;
     gstate->where_params = where_params_;
 
     // Capture the authoritative column list from the table schema.
@@ -128,28 +138,13 @@ SinkFinalizeType KeboolaUpdate::Finalize(Pipeline & /*pipeline*/,
     auto &gstate = input.global_state.Cast<KeboolaUpdateGlobalState>();
     const auto &conn = *gstate.connection;
 
-    // Build the SELECT SQL to fetch matching rows from Query Service
+    // Build the SELECT SQL to fetch matching rows from Query Service.
+    // Use the Snowflake-qualified ref captured at planning time so SF can
+    // resolve the table even for linked buckets (issue #17).  Although
+    // UPDATE on linked buckets is rejected upstream, building the SQL
+    // correctly here keeps the code path safe if that guard ever moves.
     const std::string &table_id = gstate.table_id;
-
-    // Split table_id on the last dot: "in.c-bucket.table" → schema + table
-    std::string schema_part, table_part;
-    auto last_dot = table_id.rfind('.');
-    if (last_dot != std::string::npos) {
-        schema_part = table_id.substr(0, last_dot);
-        table_part  = table_id.substr(last_dot + 1);
-    } else {
-        table_part = table_id;
-    }
-
-    std::string from_clause;
-    if (!schema_part.empty()) {
-        from_clause = KeboolaSqlGenerator::EscapeIdentifier(schema_part) + "." +
-                      KeboolaSqlGenerator::EscapeIdentifier(table_part);
-    } else {
-        from_clause = KeboolaSqlGenerator::EscapeIdentifier(table_part);
-    }
-
-    std::string select_sql = "SELECT * FROM " + from_clause;
+    std::string select_sql = "SELECT * FROM " + gstate.qualified_ref;
     const std::string where_sql = BuildWhereSql(gstate.where_params);
     if (!where_sql.empty()) {
         select_sql += " WHERE " + where_sql;

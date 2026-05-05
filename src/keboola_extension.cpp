@@ -22,8 +22,21 @@ static void KeboolaVersionScalarFun(DataChunk & /*args*/, ExpressionState & /*st
                                      Vector &result) {
     auto &result_vector = result;
     result_vector.SetVectorType(VectorType::CONSTANT_VECTOR);
-    ConstantVector::GetData<string_t>(result_vector)[0] =
-        StringVector::AddString(result_vector, "0.1.0");
+
+#if defined(__has_include) && __has_include("duckdb/common/vector/flat_vector.hpp")
+    auto *out = ConstantVector::GetDataMutable<string_t>(result_vector);
+#else
+    auto *out = ConstantVector::GetData<string_t>(result_vector);
+#endif
+
+#ifdef EXT_VERSION_KEBOOLA
+    // Build sets EXT_VERSION_KEBOOLA to the git short SHA on tagged builds and
+    // the commit short SHA otherwise.  Surface that so debug reports identify
+    // the actual binary, not a hardcoded literal.
+    out[0] = StringVector::AddString(result_vector, EXT_VERSION_KEBOOLA);
+#else
+    out[0] = StringVector::AddString(result_vector, "unknown");
+#endif
 }
 
 // ---------------------------------------------------------------------------

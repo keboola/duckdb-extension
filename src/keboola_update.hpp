@@ -33,6 +33,10 @@ struct KeboolaUpdateSetColumn {
 //! Global sink state for KeboolaUpdate.
 struct KeboolaUpdateGlobalState : public GlobalSinkState {
     std::string table_id;
+    //! Pre-built Snowflake-qualified table reference (e.g.
+    //! `"KBC_USE4_5118"."in.c-bucket"."tbl"`).  Captured at planning time
+    //! so Finalize doesn't have to recompute it.
+    std::string qualified_ref;
     std::vector<std::string> primary_key;
     //! Authoritative column names from the Keboola table schema.
     //! Used to filter out system columns (e.g. "_timestamp") that the Query

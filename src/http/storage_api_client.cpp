@@ -271,6 +271,26 @@ std::vector<KeboolaBucketInfo> StorageApiClient::ListBuckets() {
         bucket.name        = JsonStrOr(bucket_json, "name");
         bucket.stage       = JsonStrOr(bucket_json, "stage");
         bucket.description = JsonStrOr(bucket_json, "description");
+        bucket.is_linked   = JsonBoolOr(bucket_json, "isLinkedBucket");
+
+        // backendPath is the Snowflake-side [database, schema] location.
+        // For linked buckets it points at the source project's DB; for own
+        // buckets it gives the local DB and the bucket's path.  Both forms
+        // matter because Snowflake won't resolve linked buckets via their
+        // local id — only via the qualified source path.
+        yyjson_val *backend_path = yyjson_obj_get(bucket_json, "backendPath");
+        if (backend_path && yyjson_is_arr(backend_path) &&
+            yyjson_arr_size(backend_path) >= 2) {
+            yyjson_val *db_v     = yyjson_arr_get(backend_path, 0);
+            yyjson_val *schema_v = yyjson_arr_get(backend_path, 1);
+            if (db_v && yyjson_is_str(db_v)) {
+                bucket.sf_database = yyjson_get_str(db_v);
+            }
+            if (schema_v && yyjson_is_str(schema_v)) {
+                bucket.sf_schema = yyjson_get_str(schema_v);
+            }
+        }
+
         bucket_idx[bucket.id] = result.size();
         result.push_back(std::move(bucket));
     }
@@ -291,13 +311,19 @@ std::vector<KeboolaBucketInfo> StorageApiClient::ListBuckets() {
         return result;
     }
 
-    // Associate tables with their buckets
+    // Associate tables with their buckets and propagate the bucket's
+    // Snowflake-side metadata onto each table so SQL generators don't need
+    // to look up the parent bucket.
     size_t tidx, tmax;
     yyjson_val *table_json;
     yyjson_arr_foreach(tables_root, tidx, tmax, table_json) {
         KeboolaTableInfo table = ParseTableJsonElement(table_json);
         auto it = bucket_idx.find(table.bucket_id);
         if (it != bucket_idx.end()) {
+            const auto &bucket = result[it->second];
+            table.is_linked   = bucket.is_linked;
+            table.sf_database = bucket.sf_database;
+            table.sf_schema   = bucket.sf_schema;
             result[it->second].tables.push_back(std::move(table));
         }
     }

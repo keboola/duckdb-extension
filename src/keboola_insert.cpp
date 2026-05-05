@@ -42,9 +42,19 @@ unique_ptr<GlobalSinkState> KeboolaInsert::GetGlobalSinkState(ClientContext & /*
 
     // Get the KeboolaTableEntry to access connection and table metadata
     auto &keboola_table = table_.Cast<KeboolaTableEntry>();
+    const auto &table_info = keboola_table.GetKeboolaTableInfo();
+
+    // Linked buckets are owned by another project — the Storage Importer
+    // API rejects writes from this side.
+    if (table_info.is_linked) {
+        throw NotImplementedException(
+            "INSERT into linked bucket table '%s' is not supported "
+            "(linked buckets are read-only — modify them in the source project)",
+            table_info.id);
+    }
 
     // Populate table_id and connection from the Keboola-specific table entry
-    gstate->table_id   = keboola_table.GetKeboolaTableInfo().id;
+    gstate->table_id   = table_info.id;
     gstate->connection = keboola_table.GetConnection();
 
     // Build column name list from the table's logical columns

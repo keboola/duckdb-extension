@@ -17,6 +17,8 @@
 #include "duckdb/planner/filter/in_filter.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 
+#include "http/storage_api_client.hpp"
+
 #include <string>
 #include <vector>
 
@@ -25,22 +27,38 @@ namespace duckdb {
 //! Generates SQL strings for the Keboola Query Service from DuckDB scan plan information.
 class KeboolaSqlGenerator {
 public:
-    //! Build a SELECT statement from table info + optional pushed-down filters + projected columns.
+    //! Build a SELECT statement against a Keboola table.
     //!
-    //! @param table_id        Keboola table ID, e.g. "in.c-crm.contacts"
-    //! @param columns         Projected column names. If empty, generates SELECT *.
-    //! @param filters         Pushed-down filters (may be null).
-    //! @param limit           Row limit (-1 = no limit).
-    //! @param all_column_names Full table column list indexed by table column position,
-    //!                        used for WHERE clause column name resolution.
-    //!                        If empty, falls back to using `columns` (only correct when
-    //!                        all table columns are projected).
+    //! Resolves the FROM clause via `SnowflakeQualifiedRef(table)` so linked
+    //! buckets are correctly addressed via their source-project Snowflake
+    //! database (Storage API exposes `backendPath = [db, schema]` for both
+    //! own and linked buckets; see issue #17).
+    //!
+    //! @param table             Source table — uses `name`, `sf_database`,
+    //!                          `sf_schema`, `id` to build the qualified ref.
+    //! @param columns           Projected column names. If empty, SELECT *.
+    //! @param filters           Pushed-down filters (may be null).
+    //! @param limit             Row limit (-1 = no limit).
+    //! @param all_column_names  Full table column list indexed by table column
+    //!                          position, used for WHERE clause column name
+    //!                          resolution.  If empty, falls back to `columns`
+    //!                          (only correct when all columns are projected).
     static std::string BuildSelectSql(
-        const std::string &table_id,
+        const KeboolaTableInfo &table,
         const std::vector<std::string> &columns,
         const TableFilterSet *filters,
         int64_t limit = -1,
         const std::vector<std::string> &all_column_names = {});
+
+    //! Build the Snowflake-qualified FROM-clause reference for a table.
+    //!
+    //!  - When `sf_database` and `sf_schema` are both set, returns
+    //!    `"<sf_database>"."<sf_schema>"."<name>"` — required for linked
+    //!    buckets, where the data lives in another project's Snowflake DB.
+    //!  - Otherwise falls back to splitting `id` on the last dot, mirroring
+    //!    the legacy `"<schema>"."<table>"` form (works for own buckets in
+    //!    the workspace's local DB).
+    static std::string SnowflakeQualifiedRef(const KeboolaTableInfo &table);
 
     //! Quote an identifier with double-quotes, escaping internal double-quotes.
     static std::string EscapeIdentifier(const std::string &name);
