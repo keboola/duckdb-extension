@@ -22,8 +22,20 @@ static void KeboolaVersionScalarFun(DataChunk & /*args*/, ExpressionState & /*st
                                      Vector &result) {
     auto &result_vector = result;
     result_vector.SetVectorType(VectorType::CONSTANT_VECTOR);
-    ConstantVector::GetData<string_t>(result_vector)[0] =
-        StringVector::AddString(result_vector, "0.1.0");
+
+    // ConstantVector keeps the non-const GetData<T>(Vector&) overload in
+    // both v1.5.2 and DuckDB main (only FlatVector switched to a separate
+    // GetDataMutable<T>).  Using GetData here is the portable form.
+    auto *out = ConstantVector::GetData<string_t>(result_vector);
+
+#ifdef EXT_VERSION_KEBOOLA
+    // Build sets EXT_VERSION_KEBOOLA to the git short SHA on tagged builds and
+    // the commit short SHA otherwise.  Surface that so debug reports identify
+    // the actual binary, not a hardcoded literal.
+    out[0] = StringVector::AddString(result_vector, EXT_VERSION_KEBOOLA);
+#else
+    out[0] = StringVector::AddString(result_vector, "unknown");
+#endif
 }
 
 // ---------------------------------------------------------------------------

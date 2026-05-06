@@ -177,6 +177,12 @@ void KeboolaSchemaEntry::RefreshTables() {
 
     auto &catalog = ParentCatalog();
     for (auto &tbl : fresh_tables) {
+        // Propagate the parent bucket's link/Snowflake metadata onto each
+        // table — FetchBucketTables only sees /tables, not the bucket itself.
+        tbl.is_linked   = bucket_.is_linked;
+        tbl.sf_database = bucket_.sf_database;
+        tbl.sf_schema   = bucket_.sf_schema;
+
         std::string lower_name = StringUtil::Lower(tbl.name);
         if (tables_.find(lower_name) == tables_.end()) {
             bucket_.tables.push_back(tbl);
@@ -248,6 +254,15 @@ optional_ptr<CatalogEntry> KeboolaSchemaEntry::CreateTable(
     CatalogTransaction /*transaction*/, BoundCreateTableInfo &info) {
 
     auto &create_info = info.base->Cast<CreateTableInfo>();
+
+    // Linked buckets are owned by another project — the Storage API rejects
+    // table creation in them.
+    if (bucket_.is_linked) {
+        throw NotImplementedException(
+            "CREATE TABLE in linked bucket '%s' is not supported "
+            "(linked buckets are read-only — create tables in the source project)",
+            bucket_.id);
+    }
 
     // Handle IF NOT EXISTS: if the table already exists, return it silently
     std::string lower_name = StringUtil::Lower(create_info.table);
@@ -358,7 +373,7 @@ void KeboolaSchemaEntry::PullTable(ClientContext & /*context*/, const std::strin
     const KeboolaTableInfo &tbl_info = entry.GetKeboolaTableInfo();
 
     // Build SELECT * SQL using the same quoting as the normal scan path.
-    std::string sql = KeboolaSqlGenerator::BuildSelectSql(tbl_info.id, {}, nullptr, -1);
+    std::string sql = KeboolaSqlGenerator::BuildSelectSql(tbl_info, {}, nullptr, -1);
 
     // Append user-supplied WHERE filter if provided.
     // NOTE: `filter` is raw SQL by design — the caller (keboola_pull) passes user-written

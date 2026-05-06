@@ -414,7 +414,7 @@ static unique_ptr<GlobalTableFunctionState> KeboolaScanInitGlobal(ClientContext 
 
         // Build SQL (no LIMIT — DuckDB stops calling scan when it has enough rows)
         std::string sql = KeboolaSqlGenerator::BuildSelectSql(
-            bind.table_info.id,
+            bind.table_info,
             projected_names,
             filters,
             -1,

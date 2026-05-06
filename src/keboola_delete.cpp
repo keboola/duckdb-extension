@@ -39,9 +39,19 @@ KeboolaDelete::KeboolaDelete(PhysicalPlan &physical_plan,
 
 unique_ptr<GlobalSinkState> KeboolaDelete::GetGlobalSinkState(ClientContext & /*context*/) const {
     auto &keboola_table = table_.Cast<KeboolaTableEntry>();
+    const auto &table_info = keboola_table.GetKeboolaTableInfo();
+
+    // Linked buckets are owned by another project — the Storage delete-rows
+    // API rejects writes from this side.
+    if (table_info.is_linked) {
+        throw NotImplementedException(
+            "DELETE from linked bucket table '%s' is not supported "
+            "(linked buckets are read-only — modify them in the source project)",
+            table_info.id);
+    }
 
     auto gstate = make_uniq<KeboolaDeleteGlobalState>();
-    gstate->table_id   = keboola_table.GetKeboolaTableInfo().id;
+    gstate->table_id   = table_info.id;
     gstate->connection = keboola_table.GetConnection();
     gstate->params     = params_;
 

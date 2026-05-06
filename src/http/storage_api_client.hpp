@@ -41,15 +41,38 @@ struct KeboolaTableInfo {
     std::string description;   //!< From KBC.description metadata
     std::vector<std::string> primary_key;
     std::vector<KeboolaColumnInfo> columns;
+
+    //! Copy of the parent bucket's link/Snowflake metadata.  Populated during
+    //! catalog discovery so SQL generators don't need to look up the bucket.
+    bool is_linked = false;
+    std::string sf_database;   //!< e.g. "KBC_USE4_5118" (own) or "KBC_USE4_340" (linked)
+    std::string sf_schema;     //!< e.g. "in.c-crm" (own) or "out.c-source_bucket" (linked)
 };
 
 //! Metadata for a Keboola bucket (maps to a DuckDB schema).
 struct KeboolaBucketInfo {
-    std::string id;            //!< e.g. "in.c-crm"
+    std::string id;            //!< e.g. "in.c-crm" (Keboola-side bucket identifier)
     std::string name;          //!< e.g. "c-crm"
     std::string stage;         //!< "in" or "out"
     std::string description;
     std::vector<KeboolaTableInfo> tables;
+
+    //! True if this is a linked bucket (read-only, owned by another project).
+    //! Linked buckets cannot be written to via the Storage Importer API; the
+    //! source project must do that.  For SELECT, the SQL must reference the
+    //! source project's Snowflake DB + bucket path because the linked bucket
+    //! does NOT materialize as a schema in the local project's database.
+    bool is_linked = false;
+
+    //! Snowflake-side fully-qualified location of this bucket's data.
+    //! From the Storage API "backendPath" field: [database, schema].
+    //!  - For own buckets: e.g. ["KBC_USE4_5118", "in.c-mybucket"]
+    //!  - For linked buckets: ["KBC_USE4_<sourceProject>", "<sourceBucketPath>"]
+    //! Empty when the API doesn't expose backendPath; SQL falls back to using
+    //! the bucket id as an unqualified schema (works only for own buckets in
+    //! the workspace's local database).
+    std::string sf_database;
+    std::string sf_schema;
 };
 
 //! Metadata for a Keboola workspace.

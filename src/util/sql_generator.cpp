@@ -209,11 +209,40 @@ std::string KeboolaSqlGenerator::FilterToSql(const std::string &col_name,
 }
 
 // ---------------------------------------------------------------------------
+// SnowflakeQualifiedRef
+// ---------------------------------------------------------------------------
+
+std::string KeboolaSqlGenerator::SnowflakeQualifiedRef(const KeboolaTableInfo &table) {
+    // Preferred: use the bucket's full Snowflake path captured during catalog
+    // discovery.  Critical for linked buckets, which live in the source
+    // project's database and don't materialize as a schema in the workspace's
+    // local DB.
+    if (!table.sf_database.empty() && !table.sf_schema.empty()) {
+        return EscapeIdentifier(table.sf_database) + "." +
+               EscapeIdentifier(table.sf_schema) + "." +
+               EscapeIdentifier(table.name);
+    }
+
+    // Fallback: legacy id-split path.  Splits "in.c-crm.contacts" into
+    // schema="in.c-crm", table="contacts".  Works for own buckets in the
+    // workspace's local DB; will fail on linked buckets (whose schema
+    // doesn't exist locally) — but in that case sf_database/sf_schema should
+    // have been populated and we wouldn't reach here.
+    const std::string &table_id = table.id;
+    auto last_dot = table_id.rfind('.');
+    if (last_dot == std::string::npos) {
+        return EscapeIdentifier(table_id);
+    }
+    return EscapeIdentifier(table_id.substr(0, last_dot)) + "." +
+           EscapeIdentifier(table_id.substr(last_dot + 1));
+}
+
+// ---------------------------------------------------------------------------
 // BuildSelectSql
 // ---------------------------------------------------------------------------
 
 std::string KeboolaSqlGenerator::BuildSelectSql(
-        const std::string &table_id,
+        const KeboolaTableInfo &table,
         const std::vector<std::string> &columns,
         const TableFilterSet *filters,
         int64_t limit,
@@ -232,24 +261,7 @@ std::string KeboolaSqlGenerator::BuildSelectSql(
         }
     }
 
-    // FROM clause — split table_id on the LAST dot
-    // e.g. "in.c-crm.contacts" -> schema="in.c-crm", table="contacts"
-    auto last_dot = table_id.rfind('.');
-    std::string schema_part;
-    std::string table_part;
-    if (last_dot != std::string::npos) {
-        schema_part = table_id.substr(0, last_dot);
-        table_part  = table_id.substr(last_dot + 1);
-    } else {
-        schema_part = "";
-        table_part  = table_id;
-    }
-
-    sql << " FROM ";
-    if (!schema_part.empty()) {
-        sql << EscapeIdentifier(schema_part) << ".";
-    }
-    sql << EscapeIdentifier(table_part);
+    sql << " FROM " << SnowflakeQualifiedRef(table);
 
     // WHERE clause from pushed-down filters.
     // Filter column indices are table-level positions (not projected positions).

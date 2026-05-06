@@ -1,6 +1,7 @@
 #include "keboola_table.hpp"
 #include "keboola_scan.hpp"
 #include "http/query_service_client.hpp"
+#include "util/sql_generator.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -42,14 +43,10 @@ TableFunction KeboolaTableEntry::GetScanFunction(ClientContext & /*context*/,
                 connection_->workspace_id
             );
             // SELECT * to fetch all rows; filters are applied after local load.
-            std::string sql = "SELECT * FROM \"" + table_info_.id + "\"";
-            // Use the same quoting as KeboolaSqlGenerator: split on last dot.
-            auto dot = table_info_.id.rfind('.');
-            if (dot != std::string::npos) {
-                std::string schema_part = table_info_.id.substr(0, dot);
-                std::string table_part  = table_info_.id.substr(dot + 1);
-                sql = "SELECT * FROM \"" + schema_part + "\".\"" + table_part + "\"";
-            }
+            // Route via SnowflakeQualifiedRef so linked buckets resolve to
+            // their source-project DB instead of the workspace's local one.
+            std::string sql = "SELECT * FROM " +
+                              KeboolaSqlGenerator::SnowflakeQualifiedRef(table_info_);
             QueryServiceResult result = qsc.ExecuteQuery(sql);
             SetSnapshotData(std::move(result.rows), std::move(result.null_mask));
         } catch (const std::exception &) {
