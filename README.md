@@ -93,6 +93,21 @@ ATTACH 'https://connection.keboola.com' AS kbc (
 
 By default, the per-session Keboola workspace is created with `readOnlyStorageAccess = true`, which exposes every storage bucket the token can read as a queryable schema (`SELECT * FROM kbc."in.c-bucket"."tbl"` works out of the box).  The token still governs which buckets are visible — this flag only surfaces those existing permissions to the workspace's Snowflake role.
 
+### Workspace login type (Snowflake)
+
+On Snowflake-backed projects the extension requests its per-session workspace
+with `loginType = snowflake-service-keypair`, registering a throwaway RSA
+public key generated in memory for each session.  The matching private key is
+never used or persisted — all SQL runs through the Keboola Query Service, so
+the workspace user's own credentials are irrelevant.
+
+This exists because Snowflake is removing the `LEGACY_SERVICE` user type that
+the platform falls back to when no `loginType` is sent; on stacks where the
+removal has landed, default workspace creation fails with
+`invalid value 'LEGACY_SERVICE' for property 'TYPE'`.  Stacks that don't yet
+understand the `loginType` parameter get the legacy request automatically as
+a fallback.
+
 For least-privilege setups where the workspace must not see any storage buckets, opt out:
 
 ```sql

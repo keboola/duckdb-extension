@@ -102,6 +102,10 @@ public:
     //! Faster than ListBuckets() when only one bucket needs refreshing.
     std::vector<KeboolaTableInfo> FetchBucketTables(const std::string &bucket_id);
 
+    //! Return the project's default storage backend ("snowflake", "bigquery",
+    //! …) from the token-verify response, or "" when unavailable.
+    std::string GetDefaultBackend();
+
     //! Create a new workspace with a unique session-specific name.
     //! Also garbage-collects stale workspaces from previous crashed sessions.
     //!
@@ -110,6 +114,12 @@ public:
     //! Query Service can resolve table references like "in.c-bucket"."tbl"
     //! without explicit per-table loading.  When false, the workspace is an
     //! empty Snowflake schema with no view of storage buckets.
+    //!
+    //! On Snowflake projects the workspace is requested with
+    //! loginType=snowflake-service-keypair and a throwaway public key, because
+    //! Snowflake is removing the LEGACY_SERVICE user type the platform would
+    //! otherwise default to. Stacks that don't support the parameter get the
+    //! legacy request as a fallback.
     KeboolaWorkspaceInfo CreateSessionWorkspace(bool read_only_storage_access = true);
 
     //! Delete stale "duckdb-ext-*" workspaces that were orphaned by crashed sessions.

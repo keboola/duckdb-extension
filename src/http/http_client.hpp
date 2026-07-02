@@ -22,6 +22,17 @@ namespace duckdb {
 //! Supports https:// URLs (SSL required).
 class KeboolaHttpClient {
 public:
+    //! Identify this client to the Keboola platform. Without it, requests go
+    //! out with cpp-httplib's default User-Agent, which makes extension
+    //! traffic impossible to attribute in stack-side logs.
+    static const char *UserAgent() {
+#ifdef EXT_VERSION_KEBOOLA
+        return "keboola-duckdb-extension/" EXT_VERSION_KEBOOLA;
+#else
+        return "keboola-duckdb-extension/dev";
+#endif
+    }
+
     //! base_url must include the scheme, e.g. "https://connection.keboola.com"
     KeboolaHttpClient(const std::string &base_url, const std::string &token)
         : base_url_(base_url), token_(token) {}
@@ -29,7 +40,8 @@ public:
     //! HTTP GET — returns response body on success, throws on failure.
     std::string Get(const std::string &path) {
         return ExecuteWithRetry([&](httplib::Client &cli) {
-            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            httplib::Headers headers = {{"X-StorageApi-Token", token_},
+                                        {"User-Agent", UserAgent()}};
             return cli.Get(path.c_str(), headers);
         });
     }
@@ -38,7 +50,8 @@ public:
     std::string Post(const std::string &path, const std::string &body,
                      const std::string &content_type = "application/json") {
         return ExecuteWithRetry([&](httplib::Client &cli) {
-            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            httplib::Headers headers = {{"X-StorageApi-Token", token_},
+                                        {"User-Agent", UserAgent()}};
             return cli.Post(path.c_str(), headers, body, content_type.c_str());
         });
     }
@@ -46,7 +59,8 @@ public:
     //! HTTP DELETE (no body).
     std::string Delete(const std::string &path) {
         return ExecuteWithRetry([&](httplib::Client &cli) {
-            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            httplib::Headers headers = {{"X-StorageApi-Token", token_},
+                                        {"User-Agent", UserAgent()}};
             return cli.Delete(path.c_str(), headers);
         });
     }
@@ -55,7 +69,8 @@ public:
     std::string Delete(const std::string &path, const std::string &body,
                        const std::string &content_type = "application/json") {
         return ExecuteWithRetry([&](httplib::Client &cli) {
-            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            httplib::Headers headers = {{"X-StorageApi-Token", token_},
+                                        {"User-Agent", UserAgent()}};
             return cli.Delete(path.c_str(), headers, body, content_type.c_str());
         });
     }
