@@ -15,10 +15,14 @@ jobs:
   # ---------------------------------------------------------------------------
   duckdb-stable-build:
     name: Build (DuckDB v1.5.2 — Variegata)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.2
+    # ci_tools v1.5.4: needed for the VS-18-aware vcvars lookup on current
+    # windows-latest runner images (the v1.5.2 workflow hardcodes the removed
+    # VS 2022 path, silently drops into MinGW and the MSVC-vcpkg link fails).
+    # duckdb_version stays at v1.5.2 — the artifact target is unchanged.
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.4
     with:
       duckdb_version: v1.5.2
-      ci_tools_version: v1.5.2
+      ci_tools_version: v1.5.4
       extension_name: keboola
       enable_rust: false
 
