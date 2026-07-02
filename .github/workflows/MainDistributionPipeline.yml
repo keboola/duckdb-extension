@@ -11,17 +11,19 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build against DuckDB stable (v1.5.2) — every push
+  # Build against DuckDB stable (v1.5.4) — every push
+  #
+  # v1.5.4 (not v1.5.2) because current windows-latest runner images ship
+  # Visual Studio 18: the v1.5.2 ci-tools workflow hardcodes the removed
+  # VS 2022 vcvars path (silently drops into MinGW, MSVC-vcpkg link fails)
+  # and DuckDB v1.5.2's bundled fmt uses stdext::checked_array_iterator,
+  # which the VS 18 STL removed. Both are fixed in the v1.5.4 line.
   # ---------------------------------------------------------------------------
   duckdb-stable-build:
-    name: Build (DuckDB v1.5.2 — Variegata)
-    # ci_tools v1.5.4: needed for the VS-18-aware vcvars lookup on current
-    # windows-latest runner images (the v1.5.2 workflow hardcodes the removed
-    # VS 2022 path, silently drops into MinGW and the MSVC-vcpkg link fails).
-    # duckdb_version stays at v1.5.2 — the artifact target is unchanged.
+    name: Build (DuckDB v1.5.4 — Variegata)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.4
     with:
-      duckdb_version: v1.5.2
+      duckdb_version: v1.5.4
       ci_tools_version: v1.5.4
       extension_name: keboola
       enable_rust: false
@@ -63,7 +65,7 @@ jobs:
       - name: Download linux_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: keboola-v1.5.2-extension-linux_amd64
+          name: keboola-v1.5.4-extension-linux_amd64
           path: artifacts/
 
       - name: Install uv
@@ -114,7 +116,7 @@ jobs:
       - name: Download all stable build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: "keboola-v1.5.2-extension-*"
+          pattern: "keboola-v1.5.4-extension-*"
           path: artifacts/stable/
           merge-multiple: false
 
@@ -133,7 +135,7 @@ jobs:
             platform=$(basename "$platform_dir")
             for ext in "$platform_dir"*.duckdb_extension; do
               [ -f "$ext" ] || continue
-              s3_key="keboola/v1.5.2/${platform}/keboola.duckdb_extension"
+              s3_key="keboola/v1.5.4/${platform}/keboola.duckdb_extension"
               aws s3 cp "$ext" "s3://${BUCKET_NAME}/${s3_key}" --acl public-read || true
             done
           done
