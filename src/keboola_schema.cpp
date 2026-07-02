@@ -1,5 +1,6 @@
 #include "keboola_schema.hpp"
 #include "keboola_table.hpp"
+#include "keboola_compat.hpp"
 #include "http/query_service_client.hpp"
 #include "util/sql_generator.hpp"
 
@@ -93,14 +94,11 @@ unique_ptr<KeboolaTableEntry> KeboolaSchemaEntry::MakeTableEntry(
     Catalog &catalog, const KeboolaTableInfo &tbl) {
 
     CreateTableInfo create_info;
-    create_info.catalog = catalog.GetName();
-    create_info.schema  = bucket_.id;
-    create_info.table   = tbl.name;
+    keboola_compat::SetQualifiedName(create_info, catalog.GetName(), bucket_.id, tbl.name);
 
     for (auto &col : tbl.columns) {
         LogicalType dtype = StringToLogicalType(col.duckdb_type);
-        ColumnDefinition cdef(col.name, dtype);
-        create_info.columns.AddColumn(std::move(cdef));
+        create_info.columns.AddColumn(keboola_compat::MakeColumnDefinition(col.name, dtype));
     }
 
     // Expose Keboola's internal _timestamp column for incremental sync.
@@ -118,8 +116,8 @@ unique_ptr<KeboolaTableEntry> KeboolaSchemaEntry::MakeTableEntry(
 
     KeboolaTableInfo tbl_copy = tbl;
     if (!has_timestamp) {
-        ColumnDefinition ts_cdef("_timestamp", LogicalType::TIMESTAMP);
-        create_info.columns.AddColumn(std::move(ts_cdef));
+        create_info.columns.AddColumn(
+            keboola_compat::MakeColumnDefinition("_timestamp", LogicalType::TIMESTAMP));
 
         KeboolaColumnInfo ts_col;
         ts_col.name = "_timestamp";
@@ -265,7 +263,8 @@ optional_ptr<CatalogEntry> KeboolaSchemaEntry::CreateTable(
     }
 
     // Handle IF NOT EXISTS: if the table already exists, return it silently
-    std::string lower_name = StringUtil::Lower(create_info.table);
+    const std::string table_name = keboola_compat::GetTableString(create_info);
+    std::string lower_name = StringUtil::Lower(table_name);
     auto existing = tables_.find(lower_name);
     if (existing != tables_.end()) {
         if (create_info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT ||
@@ -273,13 +272,13 @@ optional_ptr<CatalogEntry> KeboolaSchemaEntry::CreateTable(
             return existing->second.get();
         }
         throw CatalogException("Table with name \"%s\" already exists in schema \"%s\"",
-                               create_info.table, bucket_.id);
+                               table_name, bucket_.id);
     }
 
     // Build column definitions for the Storage API
     std::vector<std::pair<std::string, std::string>> col_defs;
     for (const auto &col : create_info.columns.Logical()) {
-        col_defs.push_back({col.GetName(), col.GetType().ToString()});
+        col_defs.push_back({keboola_compat::NameToString(col.GetName()), col.GetType().ToString()});
     }
 
     // Extract PRIMARY KEY columns from DDL constraints
@@ -289,10 +288,10 @@ optional_ptr<CatalogEntry> KeboolaSchemaEntry::CreateTable(
             const auto &uc = constraint->Cast<UniqueConstraint>();
             if (uc.IsPrimaryKey()) {
                 if (uc.HasIndex()) {
-                    primary_keys.push_back(
-                        create_info.columns.GetColumn(uc.GetIndex()).GetName());
+                    primary_keys.push_back(keboola_compat::NameToString(
+                        create_info.columns.GetColumn(uc.GetIndex()).GetName()));
                 } else {
-                    primary_keys = uc.GetColumnNames();
+                    primary_keys = keboola_compat::NamesToStrings(uc.GetColumnNames());
                 }
                 break;
             }
@@ -301,7 +300,7 @@ optional_ptr<CatalogEntry> KeboolaSchemaEntry::CreateTable(
 
     // Create the table via Storage API
     KeboolaTableInfo table_info = connection_->storage_client->CreateTable(
-        bucket_.id, create_info.table, col_defs, primary_keys);
+        bucket_.id, table_name, col_defs, primary_keys);
 
     // Also update the local bucket_ tables list so it stays in sync
     bucket_.tables.push_back(table_info);

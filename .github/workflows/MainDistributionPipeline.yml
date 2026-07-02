@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly forward-compat canary against DuckDB main (see duckdb-next-build)
+    - cron: "0 3 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
@@ -29,10 +32,17 @@ jobs:
       enable_rust: false
 
   # ---------------------------------------------------------------------------
-  # Build against DuckDB main (nightly) — every push
+  # Build against DuckDB main — weekly canary + manual runs only.
+  #
+  # Not part of PR/push CI: DuckDB main is a moving target and its 2026-06/07
+  # API refactor (Identifier names, encapsulated bound expressions, TableFilter
+  # reshuffle) currently fails this extension wholesale — tracked as the
+  # DuckDB-main migration issue. The canary exists to notice new drift early,
+  # not to gate unrelated changes.
   # ---------------------------------------------------------------------------
   duckdb-next-build:
     name: Build (DuckDB main)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       duckdb_version: main

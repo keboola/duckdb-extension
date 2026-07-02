@@ -1,4 +1,5 @@
 #include "keboola_catalog.hpp"
+#include "keboola_compat.hpp"
 #include "keboola_insert.hpp"
 #include "keboola_update.hpp"
 #include "keboola_delete.hpp"
@@ -917,7 +918,7 @@ PhysicalOperator &KeboolaCatalog::PlanUpdate(ClientContext & /*context*/,
     // Build ordered list of all logical column names for index mapping
     vector<std::string> all_col_names;
     for (const auto &col : op.table.GetColumns().Logical()) {
-        all_col_names.push_back(col.GetName());
+        all_col_names.push_back(keboola_compat::NameToString(col.GetName()));
     }
 
     for (idx_t i = 0; i < op.columns.size(); i++) {
