@@ -16,14 +16,27 @@
 #include <ctime>
 #include <cstdio>
 
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-// OpenSSL is already a hard dependency of the HTTPS client — reuse it to
-// generate the throwaway key pair for snowflake-service-keypair workspaces.
+// Key-pair generation backend for snowflake-service-keypair workspaces.
+// Windows uses CNG/BCrypt: the vcpkg-built OpenSSL used for HTTPS there is
+// MSVC-flavoured, and pulling libcrypto's EVP provider machinery into the
+// MinGW-linked extension fails on MSVC-only runtime symbols (__chkstk).
+// POSIX reuses OpenSSL, which is already a hard dependency of the HTTPS
+// client. WASM has neither — it falls back to the legacy request body.
+#if defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
+#define KEBOOLA_CAN_GENERATE_RSA_KEYPAIR 1
+#elif defined(CPPHTTPLIB_OPENSSL_SUPPORT)
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
+#define KEBOOLA_CAN_GENERATE_RSA_KEYPAIR 1
+#endif
+
+#ifdef KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
+#include "http/rsa_pem.hpp"
 #endif
 
 namespace duckdb {
@@ -406,7 +419,7 @@ std::string StorageApiClient::GetDefaultBackend() {
 // CreateSessionWorkspace
 // ---------------------------------------------------------------------------
 
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+#ifdef KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
 //! Escape a string for embedding in a JSON string literal (PEM keys contain
 //! newlines, which must become \n inside the request body).
 static std::string JsonEscape(const std::string &s) {
@@ -429,8 +442,50 @@ static std::string JsonEscape(const std::string &s) {
 //! (SubjectPublicKeyInfo). The private key is never serialized or used — the
 //! extension talks to the workspace exclusively through the Query Service, so
 //! the Snowflake user's own credentials are dead weight. The key material is
-//! freed before returning. Returns "" on any OpenSSL failure (caller falls
-//! back to the legacy request body).
+//! freed before returning. Returns "" on any failure (caller falls back to
+//! the legacy request body).
+#if defined(_WIN32)
+static std::string GenerateThrowawayRsaPublicKeyPem() {
+    std::string pem;
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_KEY_HANDLE key = nullptr;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_RSA_ALGORITHM, nullptr, 0) != 0) {
+        return pem;
+    }
+    do {
+        if (BCryptGenerateKeyPair(alg, &key, 2048, 0) != 0) {
+            break;
+        }
+        if (BCryptFinalizeKeyPair(key, 0) != 0) {
+            break;
+        }
+        ULONG cb = 0;
+        if (BCryptExportKey(key, nullptr, BCRYPT_RSAPUBLIC_BLOB, nullptr, 0, &cb, 0) != 0 || cb == 0) {
+            break;
+        }
+        std::vector<unsigned char> buf(cb);
+        if (BCryptExportKey(key, nullptr, BCRYPT_RSAPUBLIC_BLOB, buf.data(), cb, &cb, 0) != 0) {
+            break;
+        }
+        // BCRYPT_RSAPUBLIC_BLOB layout: header, then PublicExponent and
+        // Modulus as big-endian byte strings.
+        auto *hdr = reinterpret_cast<BCRYPT_RSAKEY_BLOB *>(buf.data());
+        if (hdr->Magic != BCRYPT_RSAPUBLIC_MAGIC ||
+            sizeof(BCRYPT_RSAKEY_BLOB) + hdr->cbPublicExp + hdr->cbModulus > cb) {
+            break;
+        }
+        const char *exp = reinterpret_cast<const char *>(buf.data()) + sizeof(BCRYPT_RSAKEY_BLOB);
+        const char *mod = exp + hdr->cbPublicExp;
+        pem = keboola_rsa::BuildRsaSubjectPublicKeyInfoPem(
+            std::string(mod, hdr->cbModulus), std::string(exp, hdr->cbPublicExp));
+    } while (false);
+    if (key) {
+        BCryptDestroyKey(key);
+    }
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return pem;
+}
+#else
 static std::string GenerateThrowawayRsaPublicKeyPem() {
     std::string pem;
     EVP_PKEY *pkey = nullptr;
@@ -460,6 +515,7 @@ static std::string GenerateThrowawayRsaPublicKeyPem() {
     return pem;
 }
 #endif
+#endif // KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
 
 KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_storage_access) {
     // Best-effort: clean up orphaned workspaces from crashed sessions
@@ -476,7 +532,7 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_sto
     std::string create_resp;
     bool created = false;
 
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+#ifdef KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
     // Snowflake projects: request an explicit key-pair workspace user.
     // Without a loginType the platform falls back to a Snowflake user of type
     // LEGACY_SERVICE, which Snowflake is removing — on stacks where the

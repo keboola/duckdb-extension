@@ -51,6 +51,12 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
+# Windows generates the workspace RSA key pair via CNG (see storage_api_client.cpp)
+if(WIN32)
+    target_link_libraries(${EXTENSION_NAME} bcrypt)
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} bcrypt)
+endif()
+
 # Installation — required by the DuckDB extension distribution pipeline.
 install(
     TARGETS ${EXTENSION_NAME}
