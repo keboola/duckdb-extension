@@ -408,11 +408,18 @@ static std::string GenerateSessionSuffix() {
 // ---------------------------------------------------------------------------
 
 std::string StorageApiClient::GetDefaultBackend() {
+    // The /v2/storage index carries no owner info, so this needs the separate
+    // token-verify endpoint — memoized, as the backend is fixed per project.
+    if (default_backend_cached_) {
+        return default_backend_cache_;
+    }
     std::string body = http_.Get("/v2/storage/tokens/verify");
     auto d = ParseJson(body, "verify-token");
     yyjson_val *root  = yyjson_doc_get_root(d.doc);
     yyjson_val *owner = root ? yyjson_obj_get(root, "owner") : nullptr;
-    return JsonStrOr(owner, "defaultBackend");
+    default_backend_cache_ = JsonStrOr(owner, "defaultBackend");
+    default_backend_cached_ = true;
+    return default_backend_cache_;
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +538,11 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_sto
                                     "\",\"readOnlyStorageAccess\":" + ro_json + "}";
     std::string create_resp;
     bool created = false;
+    // Distinguishes "the stack rejected the key-pair parameters" from "the
+    // key-pair request was never sent" (backend detection or key generation
+    // failed, or a non-OpenSSL build) — the LEGACY_SERVICE error below reports
+    // whichever actually happened.
+    bool keypair_rejected = false;
 
 #ifdef KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
     // Snowflake projects: request an explicit key-pair workspace user.
@@ -566,6 +578,7 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_sto
                     msg.find("publicKey") == std::string::npos) {
                     throw IOException("Failed to create Keboola workspace: %s", msg);
                 }
+                keypair_rejected = true;
             }
         }
     }
@@ -580,10 +593,14 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_sto
                 throw IOException(
                     "Failed to create Keboola workspace: %s\n"
                     "Snowflake no longer accepts the platform's default (LEGACY_SERVICE) "
-                    "workspace user type on this stack, and the stack rejected the "
-                    "key-pair login type this extension requests instead. Ask Keboola "
-                    "support to migrate the project to a supported Snowflake login type.",
-                    msg);
+                    "workspace user type on this stack, and %s. Ask Keboola support to "
+                    "migrate the project to a supported Snowflake login type.",
+                    msg,
+                    std::string(keypair_rejected
+                                    ? "the stack rejected the key-pair login type this "
+                                      "extension requests instead"
+                                    : "the key-pair login type this extension prefers "
+                                      "could not be attempted on this connection"));
             }
             throw IOException("Failed to create Keboola workspace: %s", msg);
         }

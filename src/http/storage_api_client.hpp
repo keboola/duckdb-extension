@@ -165,6 +165,11 @@ public:
 private:
     KeboolaHttpClient http_;
 
+    //! Memoized GetDefaultBackend() result — the backend cannot change within
+    //! a client's lifetime, so one token-verify round-trip per client suffices.
+    std::string default_backend_cache_;
+    bool default_backend_cached_ = false;
+
     //! Parse column-level metadata from the JSON "columnMetadata" field of a column object.
     //! Returns the best DuckDB type string, using the mapping priority defined in type_mapper.
     std::string MapColumnType(const std::string &col_name,
