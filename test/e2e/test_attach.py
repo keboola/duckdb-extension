@@ -92,7 +92,7 @@ def test_attach_read_only(duckdb_con, keboola_token, keboola_url, test_table):
 
         with pytest.raises(Exception, match=r"(?i)read.?only"):
             duckdb_con.execute(
-                f'INSERT INTO kbc_ro."{bucket_id}".{table_name} VALUES (\'a\', \'b\', \'c\')'
+                f'INSERT INTO kbc_ro."{bucket_id}".{table_name} (id, name, value) VALUES (\'a\', \'b\', \'c\')'
             )
     finally:
         try:
