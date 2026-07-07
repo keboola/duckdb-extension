@@ -25,6 +25,10 @@ struct KeboolaInsertGlobalState : public GlobalSinkState {
     int64_t insert_count = 0;
     std::string table_id;
     std::shared_ptr<KeboolaConnection> connection;
+    //! Chunk column index of the catalog-injected "_timestamp" system column,
+    //! or -1 when the table has none. Excluded from the uploaded CSV — typed
+    //! tables reject columns outside the user-defined schema (issue #23).
+    int64_t skip_column = -1;
 };
 
 // ---------------------------------------------------------------------------

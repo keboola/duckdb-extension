@@ -58,10 +58,20 @@ unique_ptr<GlobalSinkState> KeboolaInsert::GetGlobalSinkState(ClientContext & /*
     gstate->table_id   = table_info.id;
     gstate->connection = keboola_table.GetConnection();
 
-    // Build column name list from the table's logical columns
+    // Build column name list from the table's logical columns. The catalog
+    // may have injected a "_timestamp" system column (read-only, exposed for
+    // incremental sync) — exclude it from the upload: typed tables reject
+    // columns outside the user-defined schema (issue #23).
     const auto &columns = table_.GetColumns();
+    int64_t col_idx = 0;
     for (const auto &col : columns.Logical()) {
-        gstate->column_names.push_back(keboola_compat::NameToString(col.GetName()));
+        std::string name = keboola_compat::NameToString(col.GetName());
+        if (table_info.timestamp_injected && name == "_timestamp") {
+            gstate->skip_column = col_idx;
+        } else {
+            gstate->column_names.push_back(std::move(name));
+        }
+        col_idx++;
     }
 
     // Write the CSV header row
@@ -79,8 +89,9 @@ SinkResultType KeboolaInsert::Sink(ExecutionContext & /*context*/,
                                     OperatorSinkInput &input) const {
     auto &gstate = input.global_state.Cast<KeboolaInsertGlobalState>();
 
-    // Accumulate this chunk into the CSV buffer
-    gstate.csv_builder.AddChunk(chunk, gstate.column_names);
+    // Accumulate this chunk into the CSV buffer (skipping the injected
+    // "_timestamp" column when present — see GetGlobalSinkState)
+    gstate.csv_builder.AddChunk(chunk, gstate.column_names, gstate.skip_column);
     gstate.insert_count += static_cast<int64_t>(chunk.size());
 
     return SinkResultType::NEED_MORE_INPUT;

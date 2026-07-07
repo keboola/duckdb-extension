@@ -47,6 +47,12 @@ struct KeboolaTableInfo {
     bool is_linked = false;
     std::string sf_database;   //!< e.g. "KBC_USE4_5118" (own) or "KBC_USE4_340" (linked)
     std::string sf_schema;     //!< e.g. "in.c-crm" (own) or "out.c-source_bucket" (linked)
+
+    //! True when the "_timestamp" column in `columns` was injected by the
+    //! catalog (Keboola system column exposed for incremental sync) rather
+    //! than defined by the user. Write paths must not send it to the
+    //! Importer — typed tables reject unknown columns (see issue #23).
+    bool timestamp_injected = false;
 };
 
 //! Metadata for a Keboola bucket (maps to a DuckDB schema).

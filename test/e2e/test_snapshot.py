@@ -199,6 +199,16 @@ def test_keboola_pull_all(duckdb_con, keboola_token, keboola_url,
         )
     """)
     try:
+        # keboola_pull('<db>') re-snapshots EVERY table the token can see.
+        # Against a large project that means paging hundreds of thousands of
+        # rows through the Query Service — hours, not seconds (issue #23).
+        # This test is only meaningful on a small dedicated test project.
+        n_tables = duckdb_con.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_catalog = 'kbc_pull_all'"
+        ).fetchone()[0]
+        if n_tables > 20:
+            pytest.skip(f"project has {n_tables} tables - keboola_pull-all is only run on small test projects")
+
         ref = kbc_table_ref(test_table["table_id"]).replace("kbc.", "kbc_pull_all.", 1)
 
         # Add more data after snapshot

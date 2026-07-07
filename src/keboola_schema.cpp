@@ -129,6 +129,9 @@ unique_ptr<KeboolaTableEntry> KeboolaSchemaEntry::MakeTableEntry(
         ts_col.nullable = true;
         ts_col.description = "Row-level modification timestamp (Keboola system column)";
         tbl_copy.columns.push_back(std::move(ts_col));
+        // Mark the injection so write paths can exclude the column — it is
+        // not part of the user-defined schema and typed tables reject it.
+        tbl_copy.timestamp_injected = true;
     }
 
     return make_uniq<KeboolaTableEntry>(catalog, *this, create_info, tbl_copy, connection_);

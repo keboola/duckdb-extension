@@ -90,7 +90,9 @@ def test_insert_select_from_local(test_table, kbc):
         SELECT '12', 'FromLocal3', 'lv3'
     """)
     try:
-        kbc.execute(f"INSERT INTO {ref} SELECT * FROM local_src;")
+        # Explicit column list: the catalog exposes the injected _timestamp
+        # system column, so positional INSERT would mismatch (issue #23).
+        kbc.execute(f"INSERT INTO {ref} (id, name, value) SELECT * FROM local_src;")
         count = _count(kbc, ref)
         assert count == 3, f"Expected 3 rows after INSERT...SELECT, got {count}"
 
@@ -201,7 +203,7 @@ def test_insert_readonly_fails(duckdb_con, keboola_token, keboola_url, test_tabl
     try:
         ref = kbc_table_ref(test_table["table_id"]).replace("kbc.", "kbc_ro_insert.", 1)
         with pytest.raises(Exception, match=r"(?i)read.?only"):
-            duckdb_con.execute(f"INSERT INTO {ref} VALUES ('ro1', 'RO test', 'v');")
+            duckdb_con.execute(f"INSERT INTO {ref} (id, name, value) VALUES ('ro1', 'RO test', 'v');")
     finally:
         try:
             duckdb_con.execute("DETACH kbc_ro_insert;")
