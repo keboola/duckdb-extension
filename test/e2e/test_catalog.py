@@ -97,7 +97,9 @@ def test_column_types_varchar(test_table, kbc):
     table_ref = kbc_table_ref(test_table["table_id"])
     rows = kbc.execute(f"DESCRIBE {table_ref};").fetchdf()
 
-    assert len(rows) == 3, f"Expected 3 columns, got {len(rows)}: {rows}"
+    # The catalog appends the injected _timestamp system column (issue #23)
+    rows = rows[rows["column_name"] != "_timestamp"]
+    assert len(rows) == 3, f"Expected 3 user columns, got {len(rows)}: {rows}"
     for _, row in rows.iterrows():
         col_type = str(row["column_type"]).upper()
         assert "VARCHAR" in col_type, (
