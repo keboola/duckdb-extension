@@ -262,7 +262,7 @@ def test_snapshot_write_still_live(keboola_extension_path, keboola_token, kebool
         table_name = test_table["table_id"].split(".")[-1]
 
         # Insert via DuckDB — should go to Keboola
-        con.execute(f"INSERT INTO {ref} VALUES ('sw1', 'SnapWrite', 'live_write');")
+        con.execute(f"INSERT INTO {ref} (id, name, value) VALUES ('sw1', 'SnapWrite', 'live_write');")
 
         # Pull to refresh local snapshot from Keboola
         con.execute(f"CALL keboola_pull('kbc_snap_write.\"{schema}\".{table_name}');")
