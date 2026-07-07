@@ -24,6 +24,10 @@ jobs:
   # ---------------------------------------------------------------------------
   duckdb-stable-build:
     name: Build (DuckDB v1.5.4 — Variegata)
+    # The weekly schedule exists only for the DuckDB-main canary below; the
+    # stable matrix (and the e2e job depending on it) has nothing new to test
+    # on a timer, so skip it there.
+    if: github.event_name != 'schedule'
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.4
     with:
       duckdb_version: v1.5.4

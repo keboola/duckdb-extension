@@ -17,6 +17,22 @@ namespace httplib = duckdb_httplib; // NOLINT
 
 namespace duckdb {
 
+//! A non-retriable non-2xx HTTP response. Carries the status code so callers
+//! can dispatch on it (e.g. treat a 400 validation rejection differently from
+//! auth or server errors) instead of substring-matching the message text.
+class KeboolaHttpError : public std::runtime_error {
+public:
+    KeboolaHttpError(int status, const std::string &message)
+        : std::runtime_error(message), status_(status) {}
+
+    int status() const {
+        return status_;
+    }
+
+private:
+    int status_;
+};
+
 //! Lightweight HTTPS client wrapping cpp-httplib.
 //! Automatically adds X-StorageApi-Token header and retries on transient errors.
 //! Supports https:// URLs (SSL required).
@@ -127,12 +143,12 @@ private:
 
             // 4xx — throw immediately (not retriable)
             if (res->status == 401 || res->status == 403) {
-                throw std::runtime_error("Keboola authentication failed: invalid token");
+                throw KeboolaHttpError(res->status, "Keboola authentication failed: invalid token");
             }
 
             if (res->status < 200 || res->status >= 300) {
-                throw std::runtime_error("Keboola HTTP error " + std::to_string(res->status) +
-                                         ": " + res->body);
+                throw KeboolaHttpError(res->status, "Keboola HTTP error " + std::to_string(res->status) +
+                                                        ": " + res->body);
             }
 
             return res->body;

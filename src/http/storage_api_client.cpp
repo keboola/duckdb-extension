@@ -439,7 +439,16 @@ static std::string JsonEscape(const std::string &s) {
         case '\n': out += "\\n";  break;
         case '\r': out += "\\r";  break;
         case '\t': out += "\\t";  break;
-        default:   out += c;      break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                // Remaining control characters need \u00XX to stay valid JSON.
+                char hex[8];
+                std::snprintf(hex, sizeof(hex), "\\u%04x", static_cast<unsigned char>(c));
+                out += hex;
+            } else {
+                out += c;
+            }
+            break;
         }
     }
     return out;
@@ -475,10 +484,17 @@ static std::string GenerateThrowawayRsaPublicKeyPem() {
             break;
         }
         // BCRYPT_RSAPUBLIC_BLOB layout: header, then PublicExponent and
-        // Modulus as big-endian byte strings.
+        // Modulus as big-endian byte strings. Validate the buffer is at least
+        // header-sized BEFORE reading header fields, and use subtraction (not
+        // addition) for the payload bound so the check cannot overflow.
+        if (cb < sizeof(BCRYPT_RSAKEY_BLOB)) {
+            break;
+        }
         auto *hdr = reinterpret_cast<BCRYPT_RSAKEY_BLOB *>(buf.data());
+        const ULONG payload_avail = cb - static_cast<ULONG>(sizeof(BCRYPT_RSAKEY_BLOB));
         if (hdr->Magic != BCRYPT_RSAPUBLIC_MAGIC ||
-            sizeof(BCRYPT_RSAKEY_BLOB) + hdr->cbPublicExp + hdr->cbModulus > cb) {
+            hdr->cbPublicExp > payload_avail ||
+            hdr->cbModulus > payload_avail - hdr->cbPublicExp) {
             break;
         }
         const char *exp = reinterpret_cast<const char *>(buf.data()) + sizeof(BCRYPT_RSAKEY_BLOB);
@@ -538,11 +554,11 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_sto
                                     "\",\"readOnlyStorageAccess\":" + ro_json + "}";
     std::string create_resp;
     bool created = false;
-    // Distinguishes "the stack rejected the key-pair parameters" from "the
-    // key-pair request was never sent" (backend detection or key generation
-    // failed, or a non-OpenSSL build) — the LEGACY_SERVICE error below reports
-    // whichever actually happened.
-    bool keypair_rejected = false;
+    // Distinguishes "the stack rejected the key-pair parameters" (holds the
+    // rejection message) from "the key-pair request was never sent" (empty —
+    // backend detection or key generation failed, or a build without key-pair
+    // support) — the LEGACY_SERVICE error below reports whichever happened.
+    std::string keypair_rejection;
 
 #ifdef KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
     // Snowflake projects: request an explicit key-pair workspace user.
@@ -569,16 +585,19 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_sto
             try {
                 create_resp = http_.Post("/v2/storage/workspaces", keypair_body, "application/json");
                 created = true;
-            } catch (const std::exception &e) {
-                // Older stacks reject the loginType/publicKey parameters with a
-                // validation error — retry below with the legacy body. Anything
-                // else (auth, network, quota) is a real failure.
-                std::string msg(e.what());
-                if (msg.find("loginType") == std::string::npos &&
-                    msg.find("publicKey") == std::string::npos) {
-                    throw IOException("Failed to create Keboola workspace: %s", msg);
+            } catch (const KeboolaHttpError &e) {
+                // A 400 means the stack rejected the request body — typically
+                // an older stack that doesn't know loginType/publicKey. The
+                // server created nothing, so retrying with the legacy body is
+                // safe. Anything else (auth, quota, exhausted 5xx retries) is
+                // a real failure.
+                if (e.status() != 400) {
+                    throw IOException("Failed to create Keboola workspace: %s", std::string(e.what()));
                 }
-                keypair_rejected = true;
+                keypair_rejection = e.what();
+            } catch (const std::exception &e) {
+                // Network-level failure — not a validation rejection.
+                throw IOException("Failed to create Keboola workspace: %s", std::string(e.what()));
             }
         }
     }
@@ -596,11 +615,13 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_sto
                     "workspace user type on this stack, and %s. Ask Keboola support to "
                     "migrate the project to a supported Snowflake login type.",
                     msg,
-                    std::string(keypair_rejected
-                                    ? "the stack rejected the key-pair login type this "
-                                      "extension requests instead"
-                                    : "the key-pair login type this extension prefers "
-                                      "could not be attempted on this connection"));
+                    keypair_rejection.empty()
+                        ? std::string("the key-pair login type this extension prefers was "
+                                      "not attempted (project backend detection or local "
+                                      "key generation failed, or this build has no "
+                                      "key-pair support)")
+                        : "the stack also rejected the key-pair login type this "
+                          "extension requests instead (" + keypair_rejection + ")");
             }
             throw IOException("Failed to create Keboola workspace: %s", msg);
         }

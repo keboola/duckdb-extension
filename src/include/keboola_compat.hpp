@@ -89,7 +89,9 @@ inline const std::string &GetTableString(const Info &info, long) {
     return info.table;
 }
 
-inline const std::string &GetTableString(const CreateTableInfo &info) {
+//! By value on purpose: on DuckDB main the accessor chain may materialize a
+//! temporary, so returning a reference from this dispatcher could dangle.
+inline std::string GetTableString(const CreateTableInfo &info) {
     return GetTableString(info, 0);
 }
 

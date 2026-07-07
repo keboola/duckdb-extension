@@ -94,7 +94,10 @@ unique_ptr<KeboolaTableEntry> KeboolaSchemaEntry::MakeTableEntry(
     Catalog &catalog, const KeboolaTableInfo &tbl) {
 
     CreateTableInfo create_info;
-    keboola_compat::SetQualifiedName(create_info, catalog.GetName(), bucket_.id, tbl.name);
+    // NameToString: Catalog::GetName() returns a plain string on v1.5.x and
+    // an Identifier on DuckDB main.
+    keboola_compat::SetQualifiedName(create_info, keboola_compat::NameToString(catalog.GetName()),
+                                     bucket_.id, tbl.name);
 
     for (auto &col : tbl.columns) {
         LogicalType dtype = StringToLogicalType(col.duckdb_type);
