@@ -32,7 +32,7 @@ def _fetchall(kbc_con, table_ref: str) -> pd.DataFrame:
 def test_insert_single_row(test_table, kbc):
     """INSERT 1 row, then SELECT it back and verify all field values."""
     ref = kbc_table_ref(test_table["table_id"])
-    kbc.execute(f"INSERT INTO {ref} VALUES ('r1', 'SingleRow', 'val1');")
+    kbc.execute(f"INSERT INTO {ref} (id, name, value) VALUES ('r1', 'SingleRow', 'val1');")
     df = kbc.execute(f"SELECT id, name, value FROM {ref} WHERE id = 'r1';").fetchdf()
     assert len(df) == 1, f"Expected 1 row after INSERT, got {len(df)}"
     row = df.iloc[0]
