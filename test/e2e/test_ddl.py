@@ -90,7 +90,8 @@ def test_create_table_then_insert_select(test_bucket, kbc, test_prefix):
     ref = f'kbc."{test_bucket}".{table_name}'
     kbc.execute(f"CREATE TABLE {ref} (id VARCHAR, msg VARCHAR);")
     try:
-        kbc.execute(f"INSERT INTO {ref} VALUES ('x1', 'hello'), ('x2', 'world');")
+        # Explicit column list — the catalog injects _timestamp (issue #23)
+        kbc.execute(f"INSERT INTO {ref} (id, msg) VALUES ('x1', 'hello'), ('x2', 'world');")
         df = kbc.execute(f"SELECT * FROM {ref} ORDER BY id;").fetchdf()
         assert len(df) == 2
         assert df.iloc[0]["id"] == "x1" and df.iloc[0]["msg"] == "hello"
@@ -166,9 +167,11 @@ def test_create_table_typed_columns(test_bucket, kbc, test_prefix):
         tables = _table_names_in(kbc, test_bucket)
         assert table_name in tables, f"Typed table '{table_name}' not found"
 
-        # DESCRIBE should return 6 columns
+        # DESCRIBE should return the 6 user columns (the catalog appends the
+        # injected _timestamp system column — issue #23)
         desc = kbc.execute(f"DESCRIBE {ref};").fetchdf()
-        assert len(desc) == 6, f"Expected 6 columns, got {len(desc)}"
+        desc = desc[desc["column_name"] != "_timestamp"]
+        assert len(desc) == 6, f"Expected 6 user columns, got {len(desc)}"
 
         type_map = {r["column_name"]: r["column_type"].upper() for _, r in desc.iterrows()}
         assert "BIGINT" in type_map.get("counter", "") or "INTEGER" in type_map.get("counter", ""), \
