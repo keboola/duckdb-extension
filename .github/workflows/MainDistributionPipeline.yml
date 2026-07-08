@@ -66,6 +66,13 @@ jobs:
     name: E2E tests
     needs: duckdb-stable-build
     runs-on: ubuntu-latest
+    # The live suite runs against ONE shared Keboola test project — two suites
+    # at once trample each other's scratch buckets and workspaces (observed:
+    # 5 concurrent runs after a merge+tag burst, all failing on cross-run
+    # interference). Queue them instead; never cancel a running suite.
+    concurrency:
+      group: e2e-live-test-project
+      cancel-in-progress: false
 
     env:
       KEBOOLA_TOKEN: ${{ secrets.KEBOOLA_TOKEN }}
