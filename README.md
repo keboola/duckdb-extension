@@ -327,7 +327,12 @@ uv run pytest test/e2e/ -m live --timeout=120 -v
 pytest test/e2e/ -m live --timeout=120 -v
 ```
 
-The E2E workflow (`.github/workflows/E2ETests.yml`) runs on a weekly schedule and on manual dispatch — it never triggers on ordinary pushes to avoid consuming live API credits.
+In CI the live suite runs as the `E2E tests` job of `MainDistributionPipeline` on
+every push, driven by the `KEBOOLA_TOKEN` (and optional `KEBOOLA_URL`) repository
+secrets. Point them at a **small, dedicated test project** — the suite creates and
+drops its own scratch buckets, and some tests (e.g. `keboola_pull` over all tables)
+skip themselves on projects with real data. Without the secrets every live test
+skips, which is how test-vs-implementation drift goes unnoticed.
 
 ### Docker-based test suite
 

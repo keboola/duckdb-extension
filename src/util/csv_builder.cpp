@@ -140,15 +140,21 @@ void CsvBuilder::AddRow(const std::vector<std::string> &values) {
 // AddChunk
 // ---------------------------------------------------------------------------
 
-void CsvBuilder::AddChunk(const DataChunk &chunk, const std::vector<std::string> & /*column_names*/) {
+void CsvBuilder::AddChunk(const DataChunk &chunk, const std::vector<std::string> & /*column_names*/,
+                          int64_t skip_column) {
     const idx_t num_rows = chunk.size();
     const idx_t num_cols = chunk.ColumnCount();
 
     for (idx_t row_idx = 0; row_idx < num_rows; row_idx++) {
+        bool first_field = true;
         for (idx_t col_idx = 0; col_idx < num_cols; col_idx++) {
-            if (col_idx > 0) {
+            if (skip_column >= 0 && col_idx == static_cast<idx_t>(skip_column)) {
+                continue;
+            }
+            if (!first_field) {
                 buffer_ << ',';
             }
+            first_field = false;
 
             Value val = chunk.data[col_idx].GetValue(row_idx);
             if (val.IsNull()) {

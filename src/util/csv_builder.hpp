@@ -24,7 +24,10 @@ public:
 
     //! Add rows directly from a DuckDB DataChunk.
     //! column_names: names for all columns in the chunk (unused — only used for documentation).
-    void AddChunk(const DataChunk &chunk, const std::vector<std::string> &column_names);
+    //! Append all rows of a chunk. When skip_column >= 0, that chunk column
+    //! is omitted from the CSV (catalog-injected system column, issue #23).
+    void AddChunk(const DataChunk &chunk, const std::vector<std::string> &column_names,
+                  int64_t skip_column = -1);
 
     //! Get the complete CSV as a string.
     std::string GetCsv() const;

@@ -73,7 +73,8 @@ def test_select_all(kbc, seeded_table):
     assert len(df) == len(SEED_ROWS), (
         f"Expected {len(SEED_ROWS)} rows, got {len(df)}"
     )
-    assert set(df.columns) == {"id", "name", "value"}
+    # _timestamp is the catalog-injected Keboola system column
+    assert set(df.columns) == {"id", "name", "value", "_timestamp"}
 
 
 # ---------------------------------------------------------------------------
@@ -245,4 +246,5 @@ def test_empty_table(test_table, kbc):
     df = kbc.execute(f"SELECT * FROM {ref};").fetchdf()
     assert len(df) == 0, f"Expected 0 rows from empty table, got {len(df)}"
     # Columns must still be present
-    assert set(df.columns) == {"id", "name", "value"}
+    # _timestamp is the catalog-injected Keboola system column
+    assert set(df.columns) == {"id", "name", "value", "_timestamp"}
