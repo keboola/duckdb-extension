@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly forward-compat canary against DuckDB main (see duckdb-next-build)
+    - cron: "0 3 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
@@ -11,22 +14,39 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build against DuckDB stable (v1.5.2) — every push
+  # Build against DuckDB stable (v1.5.4) — every push
+  #
+  # v1.5.4 (not v1.5.2) because current windows-latest runner images ship
+  # Visual Studio 18: the v1.5.2 ci-tools workflow hardcodes the removed
+  # VS 2022 vcvars path (silently drops into MinGW, MSVC-vcpkg link fails)
+  # and DuckDB v1.5.2's bundled fmt uses stdext::checked_array_iterator,
+  # which the VS 18 STL removed. Both are fixed in the v1.5.4 line.
   # ---------------------------------------------------------------------------
   duckdb-stable-build:
-    name: Build (DuckDB v1.5.2 — Variegata)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.2
+    name: Build (DuckDB v1.5.4 — Variegata)
+    # The weekly schedule exists only for the DuckDB-main canary below; the
+    # stable matrix (and the e2e job depending on it) has nothing new to test
+    # on a timer, so skip it there.
+    if: github.event_name != 'schedule'
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.4
     with:
-      duckdb_version: v1.5.2
-      ci_tools_version: v1.5.2
+      duckdb_version: v1.5.4
+      ci_tools_version: v1.5.4
       extension_name: keboola
       enable_rust: false
 
   # ---------------------------------------------------------------------------
-  # Build against DuckDB main (nightly) — every push
+  # Build against DuckDB main — weekly canary + manual runs only.
+  #
+  # Not part of PR/push CI: DuckDB main is a moving target and its 2026-06/07
+  # API refactor (Identifier names, encapsulated bound expressions, TableFilter
+  # reshuffle) currently fails this extension wholesale — tracked as the
+  # DuckDB-main migration issue. The canary exists to notice new drift early,
+  # not to gate unrelated changes.
   # ---------------------------------------------------------------------------
   duckdb-next-build:
     name: Build (DuckDB main)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       duckdb_version: main
@@ -59,7 +79,7 @@ jobs:
       - name: Download linux_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: keboola-v1.5.2-extension-linux_amd64
+          name: keboola-v1.5.4-extension-linux_amd64
           path: artifacts/
 
       - name: Install uv
@@ -110,7 +130,7 @@ jobs:
       - name: Download all stable build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: "keboola-v1.5.2-extension-*"
+          pattern: "keboola-v1.5.4-extension-*"
           path: artifacts/stable/
           merge-multiple: false
 
@@ -129,7 +149,7 @@ jobs:
             platform=$(basename "$platform_dir")
             for ext in "$platform_dir"*.duckdb_extension; do
               [ -f "$ext" ] || continue
-              s3_key="keboola/v1.5.2/${platform}/keboola.duckdb_extension"
+              s3_key="keboola/v1.5.4/${platform}/keboola.duckdb_extension"
               aws s3 cp "$ext" "s3://${BUCKET_NAME}/${s3_key}" --acl public-read || true
             done
           done

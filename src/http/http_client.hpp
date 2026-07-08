@@ -17,11 +17,38 @@ namespace httplib = duckdb_httplib; // NOLINT
 
 namespace duckdb {
 
+//! A non-retriable non-2xx HTTP response. Carries the status code so callers
+//! can dispatch on it (e.g. treat a 400 validation rejection differently from
+//! auth or server errors) instead of substring-matching the message text.
+class KeboolaHttpError : public std::runtime_error {
+public:
+    KeboolaHttpError(int status, const std::string &message)
+        : std::runtime_error(message), status_(status) {}
+
+    int status() const {
+        return status_;
+    }
+
+private:
+    int status_;
+};
+
 //! Lightweight HTTPS client wrapping cpp-httplib.
 //! Automatically adds X-StorageApi-Token header and retries on transient errors.
 //! Supports https:// URLs (SSL required).
 class KeboolaHttpClient {
 public:
+    //! Identify this client to the Keboola platform. Without it, requests go
+    //! out with cpp-httplib's default User-Agent, which makes extension
+    //! traffic impossible to attribute in stack-side logs.
+    static const char *UserAgent() {
+#ifdef EXT_VERSION_KEBOOLA
+        return "keboola-duckdb-extension/" EXT_VERSION_KEBOOLA;
+#else
+        return "keboola-duckdb-extension/dev";
+#endif
+    }
+
     //! base_url must include the scheme, e.g. "https://connection.keboola.com"
     KeboolaHttpClient(const std::string &base_url, const std::string &token)
         : base_url_(base_url), token_(token) {}
@@ -29,7 +56,8 @@ public:
     //! HTTP GET — returns response body on success, throws on failure.
     std::string Get(const std::string &path) {
         return ExecuteWithRetry([&](httplib::Client &cli) {
-            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            httplib::Headers headers = {{"X-StorageApi-Token", token_},
+                                        {"User-Agent", UserAgent()}};
             return cli.Get(path.c_str(), headers);
         });
     }
@@ -38,7 +66,8 @@ public:
     std::string Post(const std::string &path, const std::string &body,
                      const std::string &content_type = "application/json") {
         return ExecuteWithRetry([&](httplib::Client &cli) {
-            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            httplib::Headers headers = {{"X-StorageApi-Token", token_},
+                                        {"User-Agent", UserAgent()}};
             return cli.Post(path.c_str(), headers, body, content_type.c_str());
         });
     }
@@ -46,7 +75,8 @@ public:
     //! HTTP DELETE (no body).
     std::string Delete(const std::string &path) {
         return ExecuteWithRetry([&](httplib::Client &cli) {
-            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            httplib::Headers headers = {{"X-StorageApi-Token", token_},
+                                        {"User-Agent", UserAgent()}};
             return cli.Delete(path.c_str(), headers);
         });
     }
@@ -55,7 +85,8 @@ public:
     std::string Delete(const std::string &path, const std::string &body,
                        const std::string &content_type = "application/json") {
         return ExecuteWithRetry([&](httplib::Client &cli) {
-            httplib::Headers headers = {{"X-StorageApi-Token", token_}};
+            httplib::Headers headers = {{"X-StorageApi-Token", token_},
+                                        {"User-Agent", UserAgent()}};
             return cli.Delete(path.c_str(), headers, body, content_type.c_str());
         });
     }
@@ -112,12 +143,12 @@ private:
 
             // 4xx — throw immediately (not retriable)
             if (res->status == 401 || res->status == 403) {
-                throw std::runtime_error("Keboola authentication failed: invalid token");
+                throw KeboolaHttpError(res->status, "Keboola authentication failed: invalid token");
             }
 
             if (res->status < 200 || res->status >= 300) {
-                throw std::runtime_error("Keboola HTTP error " + std::to_string(res->status) +
-                                         ": " + res->body);
+                throw KeboolaHttpError(res->status, "Keboola HTTP error " + std::to_string(res->status) +
+                                                        ": " + res->body);
             }
 
             return res->body;

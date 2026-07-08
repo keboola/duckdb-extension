@@ -16,6 +16,29 @@
 #include <ctime>
 #include <cstdio>
 
+// Key-pair generation backend for snowflake-service-keypair workspaces.
+// Windows uses CNG/BCrypt: the vcpkg-built OpenSSL used for HTTPS there is
+// MSVC-flavoured, and pulling libcrypto's EVP provider machinery into the
+// MinGW-linked extension fails on MSVC-only runtime symbols (__chkstk).
+// POSIX reuses OpenSSL, which is already a hard dependency of the HTTPS
+// client. WASM has neither — it falls back to the legacy request body.
+#if defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
+#define KEBOOLA_CAN_GENERATE_RSA_KEYPAIR 1
+#elif defined(CPPHTTPLIB_OPENSSL_SUPPORT)
+#include <openssl/evp.h>
+#include <openssl/rsa.h>
+#include <openssl/pem.h>
+#include <openssl/bio.h>
+#include <openssl/buffer.h>
+#define KEBOOLA_CAN_GENERATE_RSA_KEYPAIR 1
+#endif
+
+#ifdef KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
+#include "http/rsa_pem.hpp"
+#endif
+
 namespace duckdb {
 
 //! Safe helpers that return a default when the value is null or wrong type.
@@ -381,8 +404,141 @@ static std::string GenerateSessionSuffix() {
 }
 
 // ---------------------------------------------------------------------------
+// GetDefaultBackend
+// ---------------------------------------------------------------------------
+
+std::string StorageApiClient::GetDefaultBackend() {
+    // The /v2/storage index carries no owner info, so this needs the separate
+    // token-verify endpoint — memoized, as the backend is fixed per project.
+    if (default_backend_cached_) {
+        return default_backend_cache_;
+    }
+    std::string body = http_.Get("/v2/storage/tokens/verify");
+    auto d = ParseJson(body, "verify-token");
+    yyjson_val *root  = yyjson_doc_get_root(d.doc);
+    yyjson_val *owner = root ? yyjson_obj_get(root, "owner") : nullptr;
+    default_backend_cache_ = JsonStrOr(owner, "defaultBackend");
+    default_backend_cached_ = true;
+    return default_backend_cache_;
+}
+
+// ---------------------------------------------------------------------------
 // CreateSessionWorkspace
 // ---------------------------------------------------------------------------
+
+#ifdef KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
+//! Escape a string for embedding in a JSON string literal (PEM keys contain
+//! newlines, which must become \n inside the request body).
+static std::string JsonEscape(const std::string &s) {
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (char c : s) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n";  break;
+        case '\r': out += "\\r";  break;
+        case '\t': out += "\\t";  break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                // Remaining control characters need \u00XX to stay valid JSON.
+                char hex[8];
+                std::snprintf(hex, sizeof(hex), "\\u%04x", static_cast<unsigned char>(c));
+                out += hex;
+            } else {
+                out += c;
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+//! Generate a throwaway RSA-2048 key pair and return the public key as PEM
+//! (SubjectPublicKeyInfo). The private key is never serialized or used — the
+//! extension talks to the workspace exclusively through the Query Service, so
+//! the Snowflake user's own credentials are dead weight. The key material is
+//! freed before returning. Returns "" on any failure (caller falls back to
+//! the legacy request body).
+#if defined(_WIN32)
+static std::string GenerateThrowawayRsaPublicKeyPem() {
+    std::string pem;
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_KEY_HANDLE key = nullptr;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_RSA_ALGORITHM, nullptr, 0) != 0) {
+        return pem;
+    }
+    do {
+        if (BCryptGenerateKeyPair(alg, &key, 2048, 0) != 0) {
+            break;
+        }
+        if (BCryptFinalizeKeyPair(key, 0) != 0) {
+            break;
+        }
+        ULONG cb = 0;
+        if (BCryptExportKey(key, nullptr, BCRYPT_RSAPUBLIC_BLOB, nullptr, 0, &cb, 0) != 0 || cb == 0) {
+            break;
+        }
+        std::vector<unsigned char> buf(cb);
+        if (BCryptExportKey(key, nullptr, BCRYPT_RSAPUBLIC_BLOB, buf.data(), cb, &cb, 0) != 0) {
+            break;
+        }
+        // BCRYPT_RSAPUBLIC_BLOB layout: header, then PublicExponent and
+        // Modulus as big-endian byte strings. Validate the buffer is at least
+        // header-sized BEFORE reading header fields, and use subtraction (not
+        // addition) for the payload bound so the check cannot overflow.
+        if (cb < sizeof(BCRYPT_RSAKEY_BLOB)) {
+            break;
+        }
+        auto *hdr = reinterpret_cast<BCRYPT_RSAKEY_BLOB *>(buf.data());
+        const ULONG payload_avail = cb - static_cast<ULONG>(sizeof(BCRYPT_RSAKEY_BLOB));
+        if (hdr->Magic != BCRYPT_RSAPUBLIC_MAGIC ||
+            hdr->cbPublicExp > payload_avail ||
+            hdr->cbModulus > payload_avail - hdr->cbPublicExp) {
+            break;
+        }
+        const char *exp = reinterpret_cast<const char *>(buf.data()) + sizeof(BCRYPT_RSAKEY_BLOB);
+        const char *mod = exp + hdr->cbPublicExp;
+        pem = keboola_rsa::BuildRsaSubjectPublicKeyInfoPem(
+            std::string(mod, hdr->cbModulus), std::string(exp, hdr->cbPublicExp));
+    } while (false);
+    if (key) {
+        BCryptDestroyKey(key);
+    }
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return pem;
+}
+#else
+static std::string GenerateThrowawayRsaPublicKeyPem() {
+    std::string pem;
+    EVP_PKEY *pkey = nullptr;
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
+    if (!ctx) {
+        return pem;
+    }
+    if (EVP_PKEY_keygen_init(ctx) > 0 &&
+        EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) > 0 &&
+        EVP_PKEY_keygen(ctx, &pkey) > 0) {
+        BIO *bio = BIO_new(BIO_s_mem());
+        if (bio) {
+            if (PEM_write_bio_PUBKEY(bio, pkey) == 1) {
+                BUF_MEM *mem = nullptr;
+                BIO_get_mem_ptr(bio, &mem);
+                if (mem && mem->data && mem->length > 0) {
+                    pem.assign(mem->data, mem->length);
+                }
+            }
+            BIO_free(bio);
+        }
+    }
+    if (pkey) {
+        EVP_PKEY_free(pkey);
+    }
+    EVP_PKEY_CTX_free(ctx);
+    return pem;
+}
+#endif
+#endif // KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
 
 KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_storage_access) {
     // Best-effort: clean up orphaned workspaces from crashed sessions
@@ -393,14 +549,82 @@ KeboolaWorkspaceInfo StorageApiClient::CreateSessionWorkspace(bool read_only_sto
     // read as a schema in the workspace's Snowflake account, so the Query
     // Service can resolve "in.c-bucket"."table" without per-table loading.
     std::string ws_name = std::string(WORKSPACE_PREFIX) + GenerateSessionSuffix();
-    std::string create_body = std::string("{\"name\":\"") + ws_name +
-                              "\",\"readOnlyStorageAccess\":" +
-                              (read_only_storage_access ? "true" : "false") + "}";
+    const std::string ro_json = read_only_storage_access ? "true" : "false";
+    const std::string legacy_body = std::string("{\"name\":\"") + ws_name +
+                                    "\",\"readOnlyStorageAccess\":" + ro_json + "}";
     std::string create_resp;
+    bool created = false;
+    // Distinguishes "the stack rejected the key-pair parameters" (holds the
+    // rejection message) from "the key-pair request was never sent" (empty —
+    // backend detection or key generation failed, or a build without key-pair
+    // support) — the LEGACY_SERVICE error below reports whichever happened.
+    std::string keypair_rejection;
+
+#ifdef KEBOOLA_CAN_GENERATE_RSA_KEYPAIR
+    // Snowflake projects: request an explicit key-pair workspace user.
+    // Without a loginType the platform falls back to a Snowflake user of type
+    // LEGACY_SERVICE, which Snowflake is removing — on stacks where the
+    // removal already landed, every default workspace creation fails with
+    // "invalid value 'LEGACY_SERVICE' for property 'TYPE'".
+    // snowflake-service-keypair sidesteps that: the platform creates a
+    // TYPE=SERVICE user keyed to a public key we generate and discard.
+    std::string backend;
     try {
-        create_resp = http_.Post("/v2/storage/workspaces", create_body, "application/json");
-    } catch (const std::exception &e) {
-        throw IOException("Failed to create Keboola workspace: %s", std::string(e.what()));
+        backend = GetDefaultBackend();
+    } catch (const std::exception &) {
+        backend.clear(); // non-fatal — fall back to the legacy request body
+    }
+    if (backend == "snowflake") {
+        std::string pub_pem = GenerateThrowawayRsaPublicKeyPem();
+        if (!pub_pem.empty()) {
+            std::string keypair_body = std::string("{\"name\":\"") + ws_name +
+                                       "\",\"backend\":\"snowflake\"" +
+                                       ",\"loginType\":\"snowflake-service-keypair\"" +
+                                       ",\"publicKey\":\"" + JsonEscape(pub_pem) + "\"" +
+                                       ",\"readOnlyStorageAccess\":" + ro_json + "}";
+            try {
+                create_resp = http_.Post("/v2/storage/workspaces", keypair_body, "application/json");
+                created = true;
+            } catch (const KeboolaHttpError &e) {
+                // A 400 means the stack rejected the request body — typically
+                // an older stack that doesn't know loginType/publicKey. The
+                // server created nothing, so retrying with the legacy body is
+                // safe. Anything else (auth, quota, exhausted 5xx retries) is
+                // a real failure.
+                if (e.status() != 400) {
+                    throw IOException("Failed to create Keboola workspace: %s", std::string(e.what()));
+                }
+                keypair_rejection = e.what();
+            } catch (const std::exception &e) {
+                // Network-level failure — not a validation rejection.
+                throw IOException("Failed to create Keboola workspace: %s", std::string(e.what()));
+            }
+        }
+    }
+#endif
+
+    if (!created) {
+        try {
+            create_resp = http_.Post("/v2/storage/workspaces", legacy_body, "application/json");
+        } catch (const std::exception &e) {
+            std::string msg(e.what());
+            if (msg.find("LEGACY_SERVICE") != std::string::npos) {
+                throw IOException(
+                    "Failed to create Keboola workspace: %s\n"
+                    "Snowflake no longer accepts the platform's default (LEGACY_SERVICE) "
+                    "workspace user type on this stack, and %s. Ask Keboola support to "
+                    "migrate the project to a supported Snowflake login type.",
+                    msg,
+                    keypair_rejection.empty()
+                        ? std::string("the key-pair login type this extension prefers was "
+                                      "not attempted (project backend detection or local "
+                                      "key generation failed, or this build has no "
+                                      "key-pair support)")
+                        : "the stack also rejected the key-pair login type this "
+                          "extension requests instead (" + keypair_rejection + ")");
+            }
+            throw IOException("Failed to create Keboola workspace: %s", msg);
+        }
     }
 
     auto cd    = ParseJson(create_resp, "create-workspace");

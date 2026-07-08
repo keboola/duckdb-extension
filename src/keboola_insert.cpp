@@ -1,4 +1,5 @@
 #include "keboola_insert.hpp"
+#include "keboola_compat.hpp"
 #include "include/keboola_table.hpp"
 #include "http/importer_client.hpp"
 
@@ -60,7 +61,7 @@ unique_ptr<GlobalSinkState> KeboolaInsert::GetGlobalSinkState(ClientContext & /*
     // Build column name list from the table's logical columns
     const auto &columns = table_.GetColumns();
     for (const auto &col : columns.Logical()) {
-        gstate->column_names.push_back(col.GetName());
+        gstate->column_names.push_back(keboola_compat::NameToString(col.GetName()));
     }
 
     // Write the CSV header row

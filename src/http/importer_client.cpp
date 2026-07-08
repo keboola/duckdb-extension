@@ -11,6 +11,9 @@ namespace httplib = duckdb_httplib; // NOLINT
 // yyjson is bundled with DuckDB — used to parse the async job response on GCP stacks.
 #include "http/yyjson_utils.hpp"
 
+// KeboolaHttpClient::UserAgent() — shared UA string for all extension HTTP traffic.
+#include "http/http_client.hpp"
+
 #include "duckdb/common/exception.hpp"
 
 #include <string>
@@ -63,7 +66,8 @@ int64_t ImporterClient::WriteTable(
 #endif
 
     httplib::Headers headers = {
-        {"X-StorageApi-Token", token_}
+        {"X-StorageApi-Token", token_},
+        {"User-Agent", KeboolaHttpClient::UserAgent()}
     };
 
     static constexpr int MAX_RETRIES = 3;
@@ -152,7 +156,8 @@ int64_t ImporterClient::WriteTable(
     poll_cli.enable_server_certificate_verification(true);
 #endif
 
-    httplib::Headers poll_headers = {{"X-StorageApi-Token", token_}};
+    httplib::Headers poll_headers = {{"X-StorageApi-Token", token_},
+                                     {"User-Agent", KeboolaHttpClient::UserAgent()}};
 
     static constexpr int POLL_TIMEOUT_MS  = 120000;
     static constexpr int POLL_INITIAL_MS  = 100;
