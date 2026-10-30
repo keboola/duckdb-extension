@@ -167,32 +167,146 @@ KeboolaBranchInfo StorageApiClient::ResolveBranch(const std::string &branch_name
 }
 
 // ---------------------------------------------------------------------------
+// Native table definition (table list V2 / table detail)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+//! One column of a native table definition.
+struct NativeColumn {
+    std::string description;
+    std::string type;
+    std::string length;
+    std::string basetype;
+    bool has_nullable = false;
+    bool nullable     = true;
+};
+
+//! The parts of a native `definition` object the catalog needs.
+struct NativeDefinition {
+    std::string description;
+    std::unordered_map<std::string, NativeColumn> columns;
+};
+
+//! Split a Keboola type length such as "38,9" into precision and scale.
+//! Values without a comma leave both at 0, like the type mapper expects.
+void ParseTypeLength(const std::string &length, int &precision, int &scale) {
+    auto comma = length.find(',');
+    if (comma == std::string::npos) {
+        return;
+    }
+    try {
+        precision = std::stoi(length.substr(0, comma));
+        scale     = std::stoi(length.substr(comma + 1));
+    } catch (...) {
+        precision = 0;
+        scale     = 0;
+    }
+}
+
+NativeDefinition ParseNativeDefinition(yyjson_val *definition) {
+    NativeDefinition result;
+    result.description = JsonStrOr(definition, "description");
+
+    yyjson_val *columns = yyjson_obj_get(definition, "columns");
+    if (!columns || !yyjson_is_arr(columns)) {
+        return result;
+    }
+    size_t idx, max;
+    yyjson_val *column;
+    yyjson_arr_foreach(columns, idx, max, column) {
+        NativeColumn col;
+        yyjson_val *col_def = yyjson_obj_get(column, "definition");
+        col.description = JsonStrOr(col_def, "description");
+        col.type        = JsonStrOr(col_def, "type");
+        col.length      = JsonIdOr(col_def, "length");
+        col.basetype    = JsonStrOr(column, "basetype");
+        yyjson_val *nullable = col_def ? yyjson_obj_get(col_def, "nullable") : nullptr;
+        if (nullable && yyjson_is_bool(nullable)) {
+            col.has_nullable = true;
+            col.nullable     = yyjson_is_true(nullable);
+        }
+        result.columns[JsonStrOr(column, "name")] = std::move(col);
+    }
+    return result;
+}
+
+//! Overlay a native definition on a table parsed from a list response.
+//! Column types come from the definition for typed tables only; an untyped
+//! table's definition carries no types.
+void ApplyNativeDefinition(KeboolaTableInfo &table, const NativeDefinition &definition) {
+    table.description = definition.description;
+    for (auto &col : table.columns) {
+        auto it = definition.columns.find(col.name);
+        if (it == definition.columns.end()) {
+            continue;
+        }
+        const NativeColumn &native = it->second;
+        col.description = native.description;
+        if (!table.is_typed) {
+            continue;
+        }
+        int precision = 0;
+        int scale     = 0;
+        ParseTypeLength(native.length, precision, scale);
+        col.keboola_type = native.type;
+        if (native.has_nullable) {
+            col.nullable = native.nullable;
+        }
+        col.duckdb_type = MapKeboolaTypeToDuckDB(native.type, native.basetype, precision, scale);
+    }
+}
+
+//! Percent-encode the square brackets of a JSON:API query key; every other
+//! character of the URLs the server hands back is already URL-safe.
+std::string EncodeQueryBrackets(const std::string &path) {
+    std::string out;
+    out.reserve(path.size() + 8);
+    for (char c : path) {
+        if (c == '[') {
+            out += "%5B";
+        } else if (c == ']') {
+            out += "%5D";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+//! Reduce an absolute `links.next` URL to the path and query the HTTP client takes.
+std::string PathFromAbsoluteUrl(const std::string &url) {
+    auto scheme = url.find("://");
+    if (scheme == std::string::npos) {
+        return EncodeQueryBrackets(url);
+    }
+    auto path_start = url.find('/', scheme + 3);
+    if (path_start == std::string::npos) {
+        throw IOException("Keboola: table list V2 returned a next link without a path: %s", url);
+    }
+    return EncodeQueryBrackets(url.substr(path_start));
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
 // ParseTableJsonElement — shared by ListBuckets and FetchBucketTables
 // ---------------------------------------------------------------------------
 
+//! Structure, primary key, column names and the KBC.datatype.* types of an
+//! untyped table. Descriptions and the types of typed tables come from the
+//! native definition (ApplyNativeDefinition).
 static KeboolaTableInfo ParseTableJsonElement(yyjson_val *table_json) {
     KeboolaTableInfo table;
-    table.id   = JsonStrOr(table_json, "id");
-    table.name = JsonStrOr(table_json, "name");
+    table.id       = JsonStrOr(table_json, "id");
+    table.name     = JsonStrOr(table_json, "name");
+    table.is_typed = JsonBoolOr(table_json, "isTyped");
 
     // Derive bucket_id: everything before the last '.' in the table id
     auto last_dot = table.id.rfind('.');
     table.bucket_id = (last_dot != std::string::npos)
                       ? table.id.substr(0, last_dot)
                       : table.id;
-
-    // Table-level metadata for description
-    yyjson_val *table_meta = yyjson_obj_get(table_json, "metadata");
-    if (table_meta && yyjson_is_arr(table_meta)) {
-        size_t mi, mm;
-        yyjson_val *meta;
-        yyjson_arr_foreach(table_meta, mi, mm, meta) {
-            std::string mk = JsonStrOr(meta, "key");
-            if (mk == "KBC.description") {
-                table.description = JsonStrOr(meta, "value");
-            }
-        }
-    }
 
     // Primary key
     yyjson_val *pk = yyjson_obj_get(table_json, "primaryKey");
@@ -224,7 +338,7 @@ static KeboolaTableInfo ParseTableJsonElement(yyjson_val *table_json) {
             int precision = 0;
             int scale     = 0;
 
-            if (col_meta_obj && yyjson_is_obj(col_meta_obj)) {
+            if (!table.is_typed && col_meta_obj && yyjson_is_obj(col_meta_obj)) {
                 yyjson_val *col_meta_arr = yyjson_obj_get(col_meta_obj, col.name.c_str());
                 if (col_meta_arr && yyjson_is_arr(col_meta_arr)) {
                     size_t cmi, cmm;
@@ -239,17 +353,9 @@ static KeboolaTableInfo ParseTableJsonElement(yyjson_val *table_json) {
                         } else if (key == "KBC.datatype.basetype") {
                             basetype = value;
                         } else if (key == "KBC.datatype.length") {
-                            auto comma = value.find(',');
-                            if (comma != std::string::npos) {
-                                try {
-                                    precision = std::stoi(value.substr(0, comma));
-                                    scale     = std::stoi(value.substr(comma + 1));
-                                } catch (...) {}
-                            }
+                            ParseTypeLength(value, precision, scale);
                         } else if (key == "KBC.datatype.nullable") {
                             col.nullable = (value != "0" && value != "false");
-                        } else if (key == "KBC.description") {
-                            col.description = value;
                         }
                     }
                 }
@@ -261,6 +367,73 @@ static KeboolaTableInfo ParseTableJsonElement(yyjson_val *table_json) {
     }
 
     return table;
+}
+
+// ---------------------------------------------------------------------------
+// ApplyNativeDefinitions
+// ---------------------------------------------------------------------------
+
+void StorageApiClient::ApplyNativeDefinitions(std::vector<KeboolaTableInfo *> &tables,
+                                              const std::string &bucket_id) {
+    // Table list V2 pages carry `definition`; it is null for a typed table
+    // (and its aliases) whose column types are not all native yet.
+    std::unordered_map<std::string, NativeDefinition> listed;
+    std::string path = "/v2/storage/branch/default/table-list?include=definition";
+    if (!bucket_id.empty()) {
+        path += "&filter%5BbucketId%5D=" + bucket_id;
+    }
+    while (!path.empty()) {
+        std::string body;
+        try {
+            body = http_.Get(path);
+        } catch (const std::exception &e) {
+            throw IOException("Keboola connection failed (table list V2): %s", std::string(e.what()));
+        }
+        auto doc = ParseJson(body, "table-list-v2");
+        yyjson_val *root = yyjson_doc_get_root(doc.doc);
+        yyjson_val *data = root ? yyjson_obj_get(root, "data") : nullptr;
+        if (!data || !yyjson_is_arr(data)) {
+            throw IOException("Keboola: unexpected response for table list V2");
+        }
+        size_t idx, max;
+        yyjson_val *item;
+        yyjson_arr_foreach(data, idx, max, item) {
+            yyjson_val *definition = yyjson_obj_get(item, "definition");
+            if (definition && yyjson_is_obj(definition)) {
+                listed[JsonStrOr(item, "id")] = ParseNativeDefinition(definition);
+            }
+        }
+        yyjson_val *links = yyjson_obj_get(root, "links");
+        yyjson_val *next  = links ? yyjson_obj_get(links, "next") : nullptr;
+        path = (next && yyjson_is_str(next)) ? PathFromAbsoluteUrl(yyjson_get_str(next)) : "";
+    }
+
+    for (auto *table : tables) {
+        auto it = listed.find(table->id);
+        if (it != listed.end()) {
+            ApplyNativeDefinition(*table, it->second);
+            continue;
+        }
+        if (!table->is_typed) {
+            continue;
+        }
+        // The table detail reads the legacy metadata for the types the list
+        // cannot express natively.
+        std::string body;
+        try {
+            body = http_.Get("/v2/storage/tables/" + table->id);
+        } catch (const std::exception &e) {
+            throw IOException("Keboola connection failed (table detail '%s'): %s",
+                              table->id, std::string(e.what()));
+        }
+        auto doc = ParseJson(body, "table-detail");
+        yyjson_val *root       = yyjson_doc_get_root(doc.doc);
+        yyjson_val *definition = root ? yyjson_obj_get(root, "definition") : nullptr;
+        if (!definition || !yyjson_is_obj(definition)) {
+            throw IOException("Keboola: table detail '%s' has no definition", table->id);
+        }
+        ApplyNativeDefinition(*table, ParseNativeDefinition(definition));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +495,7 @@ std::vector<KeboolaBucketInfo> StorageApiClient::ListBuckets() {
     // for projects with many buckets, e.g. 500+ buckets → 500+ HTTP round trips).
     std::string tables_body;
     try {
-        tables_body = http_.Get("/v2/storage/tables?include=columns,columnMetadata,metadata");
+        tables_body = http_.Get("/v2/storage/tables?include=columns,columnMetadata");
     } catch (const std::exception &e) {
         // Non-fatal: return buckets without table metadata
         return result;
@@ -351,6 +524,14 @@ std::vector<KeboolaBucketInfo> StorageApiClient::ListBuckets() {
         }
     }
 
+    std::vector<KeboolaTableInfo *> all_tables;
+    for (auto &bucket : result) {
+        for (auto &table : bucket.tables) {
+            all_tables.push_back(&table);
+        }
+    }
+    ApplyNativeDefinitions(all_tables, "");
+
     return result;
 }
 
@@ -362,7 +543,7 @@ std::vector<KeboolaTableInfo> StorageApiClient::FetchBucketTables(const std::str
     std::string tables_body;
     try {
         tables_body = http_.Get("/v2/storage/buckets/" + bucket_id +
-                                "/tables?include=columns,columnMetadata,metadata");
+                                "/tables?include=columns,columnMetadata");
     } catch (const std::exception &e) {
         throw IOException("Keboola connection failed (fetch bucket tables '%s'): %s",
                           bucket_id, std::string(e.what()));
@@ -380,6 +561,12 @@ std::vector<KeboolaTableInfo> StorageApiClient::FetchBucketTables(const std::str
     yyjson_arr_foreach(tables_root, tidx, tmax, table_json) {
         result.push_back(ParseTableJsonElement(table_json));
     }
+
+    std::vector<KeboolaTableInfo *> pointers;
+    for (auto &table : result) {
+        pointers.push_back(&table);
+    }
+    ApplyNativeDefinitions(pointers, bucket_id);
     return result;
 }
 

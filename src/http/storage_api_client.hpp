@@ -30,7 +30,7 @@ struct KeboolaColumnInfo {
     std::string duckdb_type;   //!< Mapped DuckDB type string, e.g. "BIGINT", "VARCHAR"
     std::string keboola_type;  //!< Raw Keboola type as returned by the API
     bool nullable = true;
-    std::string description;   //!< From KBC.description metadata
+    std::string description;   //!< From definition.columns[].definition.description
 };
 
 //! Metadata for a single Keboola table.
@@ -38,7 +38,8 @@ struct KeboolaTableInfo {
     std::string id;            //!< e.g. "in.c-crm.contacts"
     std::string name;          //!< e.g. "contacts"
     std::string bucket_id;     //!< e.g. "in.c-crm"
-    std::string description;   //!< From KBC.description metadata
+    std::string description;   //!< From definition.description
+    bool is_typed = false;     //!< Typed tables take column types from definition, others from KBC.datatype.*
     std::vector<std::string> primary_key;
     std::vector<KeboolaColumnInfo> columns;
 
@@ -101,7 +102,10 @@ public:
     //! Resolve a branch by name/ID.  If branch_name is empty, returns the default branch.
     KeboolaBranchInfo ResolveBranch(const std::string &branch_name = "");
 
-    //! List all buckets visible to the token, including tables and column metadata.
+    //! List all buckets visible to the token, including tables, native
+    //! descriptions and column types.  Reads the table list V2 endpoint with
+    //! include=definition; typed tables whose definition the list leaves null
+    //! are completed from the table detail.
     std::vector<KeboolaBucketInfo> ListBuckets();
 
     //! Fetch all tables for a single bucket, including column metadata.
@@ -175,6 +179,12 @@ private:
     //! a client's lifetime, so one token-verify round-trip per client suffices.
     std::string default_backend_cache_;
     bool default_backend_cached_ = false;
+
+    //! Fill descriptions and typed-table column types from the native
+    //! definition, read from table list V2 (one cursor-paged sweep, optionally
+    //! limited to one bucket) and, for a typed table the list leaves without a
+    //! definition, from the table detail.
+    void ApplyNativeDefinitions(std::vector<KeboolaTableInfo *> &tables, const std::string &bucket_id);
 
     //! Parse column-level metadata from the JSON "columnMetadata" field of a column object.
     //! Returns the best DuckDB type string, using the mapping priority defined in type_mapper.

@@ -5,8 +5,8 @@ Verifies that:
 - Buckets appear as schemas in SHOW SCHEMAS
 - Tables appear in SHOW TABLES
 - keboola_tables() scalar function lists all tables with metadata
-- Column types are correctly resolved from KBC metadata
-- KBC.description is exposed as column_comment in information_schema
+- Column types are correctly resolved (typed tables from the native definition)
+- The native column description is exposed as column_comment in information_schema
 """
 
 import pytest
@@ -154,56 +154,63 @@ def test_column_types_native(typed_test_table, kbc):
 
 
 # ---------------------------------------------------------------------------
-# 6. KBC.description as column_comment
+# 6. Native column description as column_comment
 # ---------------------------------------------------------------------------
 
-def test_column_descriptions(test_table, kbc, storage_api):
+def test_column_descriptions(storage_api, test_bucket, test_prefix, kbc):
     """
-    After setting KBC.description metadata on a column via the Storage API,
-    querying information_schema.columns must expose it as column_comment.
+    A column description set on the native table definition must appear as
+    column_comment in information_schema.columns, even when a stale
+    KBC.description metadata row holds a different text.
     """
-    table_id = test_table["table_id"]
-    bucket_id = test_table["bucket_id"]
-    table_name = test_table["table_name"]
-    description_text = "E2E test column description"
+    table_name = f"{test_prefix}described"
+    native_text = "E2E native column description"
+    stale_text = "E2E stale metadata description"
+    payload = {
+        "name": table_name,
+        "columns": [
+            {"name": "id", "definition": {"type": "VARCHAR", "description": native_text}},
+            {"name": "value", "definition": {"type": "VARCHAR"}},
+        ],
+        "primaryKeysNames": ["id"],
+    }
+    r = storage_api.session.post(
+        f"{storage_api.base_url}/v2/storage/buckets/{test_bucket}/tables-definition",
+        json=payload,
+        timeout=30,
+    )
+    r.raise_for_status()
+    created = r.json()
+    if isinstance(created, dict) and "status" in created:
+        storage_api.wait_for_job(str(created["id"]))
+        table_id = created.get("tableId") or f"{test_bucket}.{table_name}"
+    else:
+        table_id = created["id"]
 
-    # Set column metadata via Storage API
     try:
         storage_api.post(
-            f"/tables/{table_id}/columns/name/metadata",
-            json=[{"key": "KBC.description", "value": description_text}],
+            f"/tables/{table_id}/columns/id/metadata",
+            json={"provider": "user", "metadata": [{"key": "KBC.description", "value": stale_text}]},
         )
-    except Exception as exc:
-        pytest.skip(f"Could not set column metadata via Storage API: {exc}")
-
-    # Force catalog refresh so the new metadata is visible
-    try:
         kbc.execute("CALL keboola_refresh_catalog('kbc');")
-    except Exception:
-        # Function may not exist yet — DETACH/ATTACH instead
-        kbc.execute("DETACH kbc;")
-        keboola_token = kbc.execute(
-            "SELECT current_setting('keboola.token')"
-        ).fetchone()
-        # Re-attach is handled by the kbc fixture on next access; we simply re-query
-        pass
 
-    # Query information_schema
-    rows = kbc.execute(f"""
-        SELECT column_name, column_comment
-        FROM information_schema.columns
-        WHERE table_schema = '{bucket_id}'
-          AND table_name   = '{table_name}'
-          AND column_name  = 'name'
-    """).fetchdf()
-
-    if len(rows) == 0:
-        pytest.skip("information_schema.columns did not return the expected row — catalog may not support column_comment yet")
-
-    comment = rows.iloc[0]["column_comment"]
-    assert comment == description_text, (
-        f"Expected column_comment '{description_text}', got '{comment}'"
-    )
+        rows = kbc.execute(
+            """
+            SELECT column_comment
+            FROM information_schema.columns
+            WHERE table_catalog = 'kbc'
+              AND table_schema = ?
+              AND table_name = ?
+              AND column_name = 'id'
+            """,
+            [test_bucket, table_name],
+        ).fetchall()
+        assert len(rows) == 1, f"Expected one 'id' column row, got: {rows}"
+        assert rows[0][0] == native_text, (
+            f"Expected native description '{native_text}', got '{rows[0][0]}'"
+        )
+    finally:
+        storage_api.delete_table(table_id)
 
 
 # ---------------------------------------------------------------------------
