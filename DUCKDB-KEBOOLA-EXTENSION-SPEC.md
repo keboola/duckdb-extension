@@ -45,8 +45,9 @@ Application (Python, Node, Rust, CLI, Data App, ...)
             ├── CATALOG (schema discovery)
             │   └── Storage API: GET /v2/storage/buckets, /tables
             │       → buckets become schemas, tables become tables
-            │       → native types from KBC.datatype.type metadata
-            │       → descriptions from KBC.description metadata
+            │       → typed-table types from the native table definition
+            │         (untyped tables: KBC.datatype.* metadata)
+            │       → descriptions from the native table definition
             │
             ├── SELECT (reads)
             │   └── Query Service API: POST /api/v1/branches/{b}/workspaces/{w}/queries
@@ -217,9 +218,11 @@ Keboola Storage has a two-level hierarchy: **buckets** (contain tables) and **ta
 
 ### 4.3 Type System
 
+**Source of the type metadata:** typed tables read `definition.columns[].definition` (`type`, `length`, `nullable`) and `columns[].basetype` from the table list V2 (`include=definition`) or, when the list leaves the definition null, the table detail. Untyped tables read `KBC.datatype.*` column metadata.
+
 **Priority order for type resolution:**
-1. `KBC.datatype.type` — native backend type (Snowflake NUMBER, VARCHAR, etc.)
-2. `KBC.datatype.basetype` — abstract Keboola type (STRING, INTEGER, NUMERIC, etc.)
+1. native backend `type` (Snowflake NUMBER, VARCHAR, etc.)
+2. `basetype` — abstract Keboola type (STRING, INTEGER, NUMERIC, etc.)
 3. Fallback: `VARCHAR`
 
 **Native Snowflake type mapping:**
@@ -682,7 +685,7 @@ DELETE FROM kbc."in.c-crm".contacts WHERE status = 'archived';
 |---|----------|---------|
 | 1 | Workspace lifecycle | Create 1 tagged "duckdb-extension", reuse, delete in destructor, cleanup orphans on ATTACH |
 | 2 | Type casting | Always: native Snowflake types → DuckDB, fallback Keboola basetype, fallback VARCHAR |
-| 3 | Table/column descriptions | Yes — KBC.description metadata exposed as DuckDB comments |
+| 3 | Table/column descriptions | Yes — native definition descriptions exposed as DuckDB comments |
 | 4 | Wasm/CORS | Not in scope |
 | 5 | Multi-row UPDATE | Batch: fetch all matching → merge → single CSV upload |
 | 6 | HTTP client | cpp-httplib (header-only) |
