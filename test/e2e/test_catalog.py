@@ -160,8 +160,8 @@ def test_column_types_native(typed_test_table, kbc):
 def test_column_descriptions(storage_api, test_bucket, test_prefix, kbc):
     """
     A column description set on the native table definition must appear as
-    column_comment in information_schema.columns, even when a stale
-    KBC.description metadata row holds a different text.
+    column_comment in information_schema.columns, even when a legacy
+    KBC.description metadata row from another provider holds a different text.
     """
     table_name = f"{test_prefix}described"
     native_text = "E2E native column description"
@@ -189,8 +189,8 @@ def test_column_descriptions(storage_api, test_bucket, test_prefix, kbc):
 
     try:
         storage_api.post(
-            f"/tables/{table_id}/columns/id/metadata",
-            json={"provider": "user", "metadata": [{"key": "KBC.description", "value": stale_text}]},
+            f"/columns/{table_id}.id/metadata",
+            json={"provider": "keboola.e2e-test", "metadata": [{"key": "KBC.description", "value": stale_text}]},
         )
         kbc.execute("CALL keboola_refresh_catalog('kbc');")
 

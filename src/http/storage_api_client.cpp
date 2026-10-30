@@ -422,6 +422,14 @@ void StorageApiClient::ApplyNativeDefinitions(std::vector<KeboolaTableInfo *> &t
         std::string body;
         try {
             body = http_.Get("/v2/storage/tables/" + table->id);
+        } catch (const KeboolaHttpError &e) {
+            // Dropped between the legacy list and this call; the table keeps
+            // its list-derived shape and disappears on the next refresh.
+            if (e.status() == 404) {
+                continue;
+            }
+            throw IOException("Keboola connection failed (table detail '%s'): %s",
+                              table->id, std::string(e.what()));
         } catch (const std::exception &e) {
             throw IOException("Keboola connection failed (table detail '%s'): %s",
                               table->id, std::string(e.what()));
