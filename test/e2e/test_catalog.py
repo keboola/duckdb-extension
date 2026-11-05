@@ -192,7 +192,7 @@ def test_column_descriptions(storage_api, test_bucket, test_prefix, kbc):
             f"/columns/{table_id}.id/metadata",
             json={"provider": "keboola.e2e-test", "metadata": [{"key": "KBC.description", "value": stale_text}]},
         )
-        kbc.execute("CALL keboola_refresh_catalog('kbc');")
+        kbc.execute("SELECT keboola_refresh_catalog('kbc');")
 
         rows = kbc.execute(
             """
