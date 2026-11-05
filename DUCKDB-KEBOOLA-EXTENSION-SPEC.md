@@ -45,8 +45,9 @@ Application (Python, Node, Rust, CLI, Data App, ...)
             ├── CATALOG (schema discovery)
             │   └── Storage API: GET /v2/storage/buckets, /tables
             │       → buckets become schemas, tables become tables
-            │       → native types from KBC.datatype.type metadata
-            │       → descriptions from KBC.description metadata
+            │       → typed-table types from the native table definition
+            │         (untyped tables: KBC.datatype.* metadata)
+            │       → descriptions from the native table definition
             │
             ├── SELECT (reads)
             │   └── Query Service API: POST /api/v1/branches/{b}/workspaces/{w}/queries
@@ -217,9 +218,11 @@ Keboola Storage has a two-level hierarchy: **buckets** (contain tables) and **ta
 
 ### 4.3 Type System
 
+**Source of the type metadata:** typed tables read `definition.columns[].definition` (`type`, `length`, `nullable`) and `columns[].basetype` from the table list V2 (`include=definition`). When the list leaves the definition null (a typed table whose column types are not all native yet, and its aliases), they read the `KBC.datatype.*` column metadata of provider `storage` from the legacy table list (the root source table's for an alias that syncs its columns) - the rows the table detail builds its definition from; the catalog makes no per-table requests. Untyped tables read `KBC.datatype.*` column metadata. Table and column descriptions come from the table list V2 only: `definition.description` and `definition.columns[].definition.description`, or the item `description` when the definition is null (column descriptions stay empty then). They surface as DuckDB comments (`duckdb_tables().comment`, `information_schema.columns.column_comment`).
+
 **Priority order for type resolution:**
-1. `KBC.datatype.type` — native backend type (Snowflake NUMBER, VARCHAR, etc.)
-2. `KBC.datatype.basetype` — abstract Keboola type (STRING, INTEGER, NUMERIC, etc.)
+1. native backend `type` (Snowflake NUMBER, VARCHAR, etc.)
+2. `basetype` — abstract Keboola type (STRING, INTEGER, NUMERIC, etc.)
 3. Fallback: `VARCHAR`
 
 **Native Snowflake type mapping:**
@@ -250,18 +253,12 @@ Keboola Storage has a two-level hierarchy: **buckets** (contain tables) and **ta
 
 ### 4.4 Table and Column Descriptions
 
-Keboola metadata is exposed as DuckDB comments:
+Descriptions come from the native table definition in the table list V2 (`GET /v2/storage/branch/default/table-list?include=definition`), read once per catalog build or bucket refresh:
 
-```json
-{
-  "metadata": [{"key": "KBC.description", "value": "CRM contacts table"}],
-  "columnMetadata": {
-    "revenue": [{"key": "KBC.description", "value": "Total revenue in USD"}]
-  }
-}
-```
+- table: `definition.description`, or the item `description` when the definition is null;
+- column: `definition.columns[].definition.description` (none when the definition is null).
 
-These are loaded during catalog build and stored on `KeboolaTableEntry`. DuckDB exposes them via `SHOW CREATE TABLE` and information schema.
+`KBC.description` metadata is not read. The descriptions are stored on `KeboolaTableEntry` as DuckDB comments: the table comment in `duckdb_tables().comment`, column comments in `duckdb_columns().comment` and `information_schema.columns.column_comment`. An empty description stays NULL.
 
 ### 4.5 Read Path — SELECT via Query Service
 
@@ -504,8 +501,9 @@ duckdb-keboola/
 | List workspaces | Storage API | GET | `/v2/storage/workspaces` |
 | Create workspace | Storage API | POST | `/v2/storage/workspaces` |
 | Delete workspace | Storage API | DELETE | `/v2/storage/workspaces/{id}` |
-| List buckets + tables | Storage API | GET | `/v2/storage/buckets?include=tables,columns` |
-| Table detail (PK + metadata) | Storage API | GET | `/v2/storage/tables/{tableId}` |
+| List buckets | Storage API | GET | `/v2/storage/buckets` |
+| List tables (columns, PK, column metadata) | Storage API | GET | `/v2/storage/tables?include=columns,columnMetadata,sourceColumnMetadata` (per bucket: `/v2/storage/buckets/{bucketId}/tables?...`) |
+| Native table definitions + descriptions | Storage API | GET | `/v2/storage/branch/default/table-list?include=definition` (cursor-paged; `filter[bucketId]` per bucket) |
 | Create bucket | Storage API | POST | `/v2/storage/buckets` |
 | Create table | Storage API | POST | `/v2/storage/buckets/{bucketId}/tables-definition` |
 | Delete table | Storage API | DELETE | `/v2/storage/tables/{tableId}` |
@@ -565,7 +563,7 @@ SELECT keboola_version();  -- returns version string
 - `KeboolaCatalog` + `KeboolaSchemaEntry` + `KeboolaTableEntry`
 - `KeboolaTransactionManager` + `KeboolaTransaction` (no-op)
 - `StorageApiClient`: service discovery, workspaces, buckets, tables
-- Native type mapping + KBC.description loading
+- Native type mapping + native description loading
 - Catalog cache (60s TTL)
 
 **Acceptance:**
@@ -682,7 +680,7 @@ DELETE FROM kbc."in.c-crm".contacts WHERE status = 'archived';
 |---|----------|---------|
 | 1 | Workspace lifecycle | Create 1 tagged "duckdb-extension", reuse, delete in destructor, cleanup orphans on ATTACH |
 | 2 | Type casting | Always: native Snowflake types → DuckDB, fallback Keboola basetype, fallback VARCHAR |
-| 3 | Table/column descriptions | Yes — KBC.description metadata exposed as DuckDB comments |
+| 3 | Table/column descriptions | Yes — native definition descriptions exposed as DuckDB comments |
 | 4 | Wasm/CORS | Not in scope |
 | 5 | Multi-row UPDATE | Batch: fetch all matching → merge → single CSV upload |
 | 6 | HTTP client | cpp-httplib (header-only) |

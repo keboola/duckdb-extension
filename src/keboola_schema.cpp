@@ -99,9 +99,19 @@ unique_ptr<KeboolaTableEntry> KeboolaSchemaEntry::MakeTableEntry(
     keboola_compat::SetQualifiedName(create_info, keboola_compat::NameToString(catalog.GetName()),
                                      bucket_.id, tbl.name);
 
+    // Descriptions surface as DuckDB comments (duckdb_tables().comment,
+    // information_schema.columns.column_comment); an empty one stays NULL.
+    if (!tbl.description.empty()) {
+        create_info.comment = Value(tbl.description);
+    }
+
     for (auto &col : tbl.columns) {
         LogicalType dtype = StringToLogicalType(col.duckdb_type);
-        create_info.columns.AddColumn(keboola_compat::MakeColumnDefinition(col.name, dtype));
+        auto column = keboola_compat::MakeColumnDefinition(col.name, dtype);
+        if (!col.description.empty()) {
+            column.SetComment(Value(col.description));
+        }
+        create_info.columns.AddColumn(std::move(column));
     }
 
     // Expose Keboola's internal _timestamp column for incremental sync.
@@ -119,15 +129,16 @@ unique_ptr<KeboolaTableEntry> KeboolaSchemaEntry::MakeTableEntry(
 
     KeboolaTableInfo tbl_copy = tbl;
     if (!has_timestamp) {
-        create_info.columns.AddColumn(
-            keboola_compat::MakeColumnDefinition("_timestamp", LogicalType::TIMESTAMP));
-
         KeboolaColumnInfo ts_col;
         ts_col.name = "_timestamp";
         ts_col.duckdb_type = "TIMESTAMP";
         ts_col.keboola_type = "TIMESTAMP";
         ts_col.nullable = true;
         ts_col.description = "Row-level modification timestamp (Keboola system column)";
+
+        auto ts_column = keboola_compat::MakeColumnDefinition(ts_col.name, LogicalType::TIMESTAMP);
+        ts_column.SetComment(Value(ts_col.description));
+        create_info.columns.AddColumn(std::move(ts_column));
         tbl_copy.columns.push_back(std::move(ts_col));
         // Mark the injection so write paths can exclude the column — it is
         // not part of the user-defined schema and typed tables reject it.
