@@ -218,7 +218,7 @@ Keboola Storage has a two-level hierarchy: **buckets** (contain tables) and **ta
 
 ### 4.3 Type System
 
-**Source of the type metadata:** typed tables read `definition.columns[].definition` (`type`, `length`, `nullable`) and `columns[].basetype` from the table list V2 (`include=definition`) or, when the list leaves the definition null, the table detail. Untyped tables read `KBC.datatype.*` column metadata.
+**Source of the type metadata:** typed tables read `definition.columns[].definition` (`type`, `length`, `nullable`) and `columns[].basetype` from the table list V2 (`include=definition`). When the list leaves the definition null (a typed table whose column types are not all native yet, and its aliases), they read the `KBC.datatype.*` column metadata of provider `storage` from the legacy table list (the root source table's for an alias that syncs its columns) - the rows the table detail builds its definition from - so no per-table request is made. Untyped tables read `KBC.datatype.*` column metadata. Table and column descriptions come from the table list V2 only: `definition.description` and `definition.columns[].definition.description`, or the item `description` when the definition is null (column descriptions stay empty then). They surface as DuckDB comments (`duckdb_tables().comment`, `information_schema.columns.column_comment`).
 
 **Priority order for type resolution:**
 1. native backend `type` (Snowflake NUMBER, VARCHAR, etc.)

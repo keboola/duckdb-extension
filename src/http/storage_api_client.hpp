@@ -39,7 +39,7 @@ struct KeboolaTableInfo {
     std::string name;          //!< e.g. "contacts"
     std::string bucket_id;     //!< e.g. "in.c-crm"
     std::string description;   //!< From definition.description
-    bool is_typed = false;     //!< Typed tables take column types from definition, others from KBC.datatype.*
+    bool is_typed = false;     //!< Typed: types from definition or `storage` KBC.datatype.* rows; untyped: any KBC.datatype.*
     std::vector<std::string> primary_key;
     std::vector<KeboolaColumnInfo> columns;
 
@@ -104,8 +104,9 @@ public:
 
     //! List all buckets visible to the token, including tables, native
     //! descriptions and column types.  Reads the table list V2 endpoint with
-    //! include=definition; typed tables whose definition the list leaves null
-    //! are completed from the table detail.
+    //! include=definition; a typed table whose definition the list leaves null
+    //! takes its column types from the `storage` KBC.datatype.* rows of the
+    //! legacy table list.
     std::vector<KeboolaBucketInfo> ListBuckets();
 
     //! Fetch all tables for a single bucket, including column metadata.
@@ -182,8 +183,9 @@ private:
 
     //! Fill descriptions and typed-table column types from the native
     //! definition, read from table list V2 (one cursor-paged sweep, optionally
-    //! limited to one bucket) and, for a typed table the list leaves without a
-    //! definition, from the table detail.
+    //! limited to one bucket). No per-table request: a typed table the list
+    //! leaves without a definition keeps its `storage`-row types and takes the
+    //! list's table description.
     void ApplyNativeDefinitions(std::vector<KeboolaTableInfo *> &tables, const std::string &bucket_id);
 
     //! Parse column-level metadata from the JSON "columnMetadata" field of a column object.
