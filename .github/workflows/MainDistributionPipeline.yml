@@ -104,7 +104,7 @@ jobs:
         # pyproject.toml adds: -x --tb=short timeout=120
         # @pytest.mark.timeout(300) overrides for slow tests
         run: |
-          uv run pytest . -m live -v \
+          uv run pytest . -m "live or offline" -v \
             --junitxml=${{ github.workspace }}/test-results/e2e.xml
         env:
           KEBOOLA_TOKEN: ${{ env.KEBOOLA_TOKEN }}
