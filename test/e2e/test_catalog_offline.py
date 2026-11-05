@@ -13,8 +13,10 @@ credentials. They cover how the catalog builds column types and descriptions:
 - such a table never fails ATTACH, also when it has no type rows at all.
 """
 
+import copy
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -129,6 +131,16 @@ UNTYPED_V2 = _v2_item(
     },
 )
 
+# Alias created after ATTACH: only the per-bucket refresh (FetchBucketTables)
+# sees it.
+LATE_ALIAS = _legacy_table(
+    "late_alias",
+    ["total"],
+    {},
+    source_column_metadata={"total": [_row("KBC.datatype.type", "NUMBER"), _row("KBC.datatype.length", "10,3")]},
+)
+LATE_ALIAS_V2 = _v2_item("late_alias", "Late alias description", None)
+
 LEGACY_TABLES = [NATIVE_TYPED, KV_TYPED, BARE_TYPED, ALIAS_TYPED, UNTYPED]
 # Two V2 pages, linked through an absolute `links.next` with a JSON:API cursor.
 V2_PAGES = [
@@ -155,6 +167,18 @@ class FakeStorageApi(BaseHTTPRequestHandler):
         host, port = self.server.server_address[:2]
         return f"http://{host}:{port}"
 
+    @staticmethod
+    def _legacy_list(tables, query):
+        # The roots of these aliases sit in another project (a linked bucket):
+        # the server emits their column metadata only for sourceColumnMetadata.
+        includes = ",".join(query.get("include", [])).split(",")
+        result = copy.deepcopy(tables)
+        if "sourceColumnMetadata" not in includes:
+            for table in result:
+                if "sourceTable" in table:
+                    table["sourceTable"]["columnMetadata"] = []
+        return result
+
     def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler naming
         self.server.requests.append(("GET", self.path))
         url = urlsplit(self.path)
@@ -173,7 +197,11 @@ class FakeStorageApi(BaseHTTPRequestHandler):
             self._send(200, [{"id": BUCKET_ID, "name": "c-crm", "stage": "in", "description": "",
                               "isLinkedBucket": False, "backendPath": ["DB", BUCKET_ID]}])
         elif path in ("/v2/storage/tables", f"/v2/storage/buckets/{BUCKET_ID}/tables"):
-            self._send(200, LEGACY_TABLES)
+            tables = LEGACY_TABLES if path == "/v2/storage/tables" else LEGACY_TABLES + [LATE_ALIAS]
+            self._send(200, self._legacy_list(tables, query))
+        elif path == "/v2/storage/branch/default/table-list" and "filter[bucketId]" in query:
+            items = [item for page in V2_PAGES for item in page] + [LATE_ALIAS_V2]
+            self._send(200, {"data": items, "links": {"next": None}})
         elif path == "/v2/storage/branch/default/table-list":
             page = int(query.get("page[after]", ["0"])[0])
             links = {"next": None}
@@ -296,3 +324,24 @@ def test_attach_reads_no_table_detail(offline_kbc, fake_storage_api):
         if method == "GET" and urlsplit(path).path == "/v2/storage/branch/default/table-list"
     ]
     assert len(v2_requests) >= 2, f"Expected both table list V2 pages to be read, got: {v2_requests}"
+
+
+def test_refresh_types_new_alias_from_root_storage_rows(offline_kbc, fake_storage_api):
+    # Past the 2 s refresh throttle, a catalog scan re-reads the bucket.
+    time.sleep(2.5)
+    columns = _columns(offline_kbc, "late_alias")
+    assert columns["total"] == ("DECIMAL(10,3)", None)
+    assert _table_comment(offline_kbc, "late_alias") == "Late alias description"
+
+    bucket_v2_requests = [
+        path for method, path in fake_storage_api.requests
+        if method == "GET"
+        and urlsplit(path).path == "/v2/storage/branch/default/table-list"
+        and "filter[bucketId]" in parse_qs(unquote(urlsplit(path).query))
+    ]
+    assert bucket_v2_requests, "Expected the refresh to read table list V2 filtered to the bucket"
+    detail_requests = [
+        path for method, path in fake_storage_api.requests
+        if method == "GET" and urlsplit(path).path.startswith("/v2/storage/tables/")
+    ]
+    assert detail_requests == []

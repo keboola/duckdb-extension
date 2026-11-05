@@ -38,7 +38,7 @@ struct KeboolaTableInfo {
     std::string id;            //!< e.g. "in.c-crm.contacts"
     std::string name;          //!< e.g. "contacts"
     std::string bucket_id;     //!< e.g. "in.c-crm"
-    std::string description;   //!< From definition.description
+    std::string description;   //!< From table list V2: definition.description, or the item description when the definition is null
     bool is_typed = false;     //!< Typed: types from definition or `storage` KBC.datatype.* rows; untyped: any KBC.datatype.*
     std::vector<std::string> primary_key;
     std::vector<KeboolaColumnInfo> columns;
@@ -183,9 +183,9 @@ private:
 
     //! Fill descriptions and typed-table column types from the native
     //! definition, read from table list V2 (one cursor-paged sweep, optionally
-    //! limited to one bucket). No per-table request: a typed table the list
+    //! limited to one bucket, no per-table requests). A typed table the list
     //! leaves without a definition keeps its `storage`-row types and takes the
-    //! list's table description.
+    //! list item's table description.
     void ApplyNativeDefinitions(std::vector<KeboolaTableInfo *> &tables, const std::string &bucket_id);
 
     //! Parse column-level metadata from the JSON "columnMetadata" field of a column object.
