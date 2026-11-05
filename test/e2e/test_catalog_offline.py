@@ -169,8 +169,8 @@ class FakeStorageApi(BaseHTTPRequestHandler):
 
     @staticmethod
     def _legacy_list(tables, query):
-        # The roots of these aliases sit in another project (a linked bucket):
-        # the server emits their column metadata only for sourceColumnMetadata.
+        # Mimics alias roots in another project (as for a linked bucket): the
+        # server emits their column metadata only for sourceColumnMetadata.
         includes = ",".join(query.get("include", [])).split(",")
         result = copy.deepcopy(tables)
         if "sourceColumnMetadata" not in includes:
@@ -319,11 +319,14 @@ def test_attach_reads_no_table_detail(offline_kbc, fake_storage_api):
         if method == "GET" and urlsplit(path).path.startswith("/v2/storage/tables/")
     ]
     assert detail_requests == []
-    v2_requests = [
-        path for method, path in fake_storage_api.requests
+    v2_queries = [
+        parse_qs(unquote(urlsplit(path).query)) for method, path in fake_storage_api.requests
         if method == "GET" and urlsplit(path).path == "/v2/storage/branch/default/table-list"
     ]
-    assert len(v2_requests) >= 2, f"Expected both table list V2 pages to be read, got: {v2_requests}"
+    project_queries = [query for query in v2_queries if "filter[bucketId]" not in query]
+    assert any("page[after]" in query for query in project_queries), (
+        f"Expected the second table list V2 page to be read through links.next, got: {project_queries}"
+    )
 
 
 def test_refresh_types_new_alias_from_root_storage_rows(offline_kbc, fake_storage_api):

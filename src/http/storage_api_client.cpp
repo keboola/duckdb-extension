@@ -169,7 +169,7 @@ KeboolaBranchInfo StorageApiClient::ResolveBranch(const std::string &branch_name
 }
 
 // ---------------------------------------------------------------------------
-// Native table definition (table list V2 / table detail)
+// Native table definition (table list V2)
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -292,7 +292,7 @@ std::string PathFromAbsoluteUrl(const std::string &url) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// ParseTableJsonElement — shared by ListBuckets and FetchBucketTables
+// Storage-provider type rows of typed tables
 // ---------------------------------------------------------------------------
 
 //! Whether a KBC.datatype.nullable row value reads as nullable, the way the
@@ -352,6 +352,10 @@ static void ApplyStorageTypeRows(KeboolaColumnInfo &col, yyjson_val *col_meta_ar
     col.keboola_type = kbc_type;
     col.duckdb_type  = MapKeboolaTypeToDuckDB(kbc_type, basetype, precision, scale);
 }
+
+// ---------------------------------------------------------------------------
+// ParseTableJsonElement — shared by ListBuckets and FetchBucketTables
+// ---------------------------------------------------------------------------
 
 //! Structure, primary key, column names and column types. An untyped table
 //! reads the KBC.datatype.* rows of any provider; a typed table reads the
